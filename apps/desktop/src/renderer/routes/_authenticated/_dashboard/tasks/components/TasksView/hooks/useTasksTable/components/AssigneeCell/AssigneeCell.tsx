@@ -24,8 +24,8 @@ export function AssigneeCell({ info }: AssigneeCellProps) {
 	const assigneeId = info.getValue();
 
 	const { data: allUsers } = useLiveQuery(
-		(q) => q.from({ users: collections.users }),
-		[collections],
+		(q) => (open ? q.from({ users: collections.users }) : null),
+		[collections, open],
 	);
 
 	const users = useMemo(() => allUsers || [], [allUsers]);

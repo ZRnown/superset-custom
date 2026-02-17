@@ -1,7 +1,7 @@
 import { Button } from "@superset/ui/button";
 import { Input } from "@superset/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@superset/ui/tabs";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { HiOutlineMagnifyingGlass, HiXMark } from "react-icons/hi2";
 import { useAppHotkey } from "renderer/stores/hotkeys";
 import { ActiveIcon } from "../shared/icons/ActiveIcon";
@@ -51,6 +51,23 @@ export function TasksTopBar({
 	onClearSelection,
 }: TasksTopBarProps) {
 	const searchInputRef = useRef<HTMLInputElement>(null);
+	const [localSearch, setLocalSearch] = useState(searchQuery);
+	const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+	// Sync local state when parent clears the search
+	useEffect(() => {
+		if (searchQuery === "") setLocalSearch("");
+	}, [searchQuery]);
+
+	const handleSearchInput = (value: string) => {
+		setLocalSearch(value);
+		clearTimeout(debounceRef.current);
+		debounceRef.current = setTimeout(() => onSearchChange(value), 150);
+	};
+
+	useEffect(() => {
+		return () => clearTimeout(debounceRef.current);
+	}, []);
 
 	useAppHotkey(
 		"FOCUS_TASK_SEARCH",
@@ -121,10 +138,12 @@ export function TasksTopBar({
 					ref={searchInputRef}
 					type="text"
 					placeholder="Search tasks..."
-					value={searchQuery}
-					onChange={(e) => onSearchChange(e.target.value)}
+					value={localSearch}
+					onChange={(e) => handleSearchInput(e.target.value)}
 					onKeyDown={(e) => {
 						if (e.key === "Escape") {
+							clearTimeout(debounceRef.current);
+							setLocalSearch("");
 							onSearchChange("");
 							searchInputRef.current?.blur();
 						}

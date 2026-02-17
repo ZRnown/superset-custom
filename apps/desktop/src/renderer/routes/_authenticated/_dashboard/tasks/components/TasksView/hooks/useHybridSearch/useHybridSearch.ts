@@ -1,5 +1,5 @@
 import Fuse from "fuse.js";
-import { useCallback, useMemo } from "react";
+import { useCallback, useRef } from "react";
 
 interface SearchableTask {
 	id: string;
@@ -16,52 +16,56 @@ interface SearchResult<T extends SearchableTask> {
 }
 
 export function useHybridSearch<T extends SearchableTask>(tasks: T[]) {
-	const exactFuse = useMemo(
-		() =>
-			new Fuse(tasks, {
-				keys: [
-					{ name: "slug", weight: 2 },
-					{ name: "labels", weight: 1 },
-				],
-				threshold: 0,
-				includeScore: true,
-				ignoreLocation: true,
-				useExtendedSearch: false,
-			}),
-		[tasks],
-	);
+	const tasksRef = useRef(tasks);
+	tasksRef.current = tasks;
 
-	const fuzzyFuse = useMemo(
-		() =>
-			new Fuse(tasks, {
-				keys: [
-					{ name: "title", weight: 2 },
-					{ name: "description", weight: 1 },
-				],
-				threshold: 0.3,
-				includeScore: true,
-				ignoreLocation: true,
-				useExtendedSearch: false,
-			}),
-		[tasks],
-	);
+	const exactFuseRef = useRef<Fuse<T> | null>(null);
+	const fuzzyFuseRef = useRef<Fuse<T> | null>(null);
+	const indexedTasksRef = useRef<T[] | null>(null);
+
+	const ensureIndex = useCallback(() => {
+		if (indexedTasksRef.current === tasksRef.current) return;
+		exactFuseRef.current = new Fuse(tasksRef.current, {
+			keys: [
+				{ name: "slug", weight: 2 },
+				{ name: "labels", weight: 1 },
+			],
+			threshold: 0,
+			includeScore: true,
+			ignoreLocation: true,
+			useExtendedSearch: false,
+		});
+		fuzzyFuseRef.current = new Fuse(tasksRef.current, {
+			keys: [
+				{ name: "title", weight: 2 },
+				{ name: "description", weight: 1 },
+			],
+			threshold: 0.3,
+			includeScore: true,
+			ignoreLocation: true,
+			useExtendedSearch: false,
+		});
+		indexedTasksRef.current = tasksRef.current;
+	}, []);
 
 	const search = useCallback(
 		(query: string): SearchResult<T>[] => {
 			if (!query.trim()) {
-				return tasks.map((item) => ({
+				return tasksRef.current.map((item) => ({
 					item,
 					score: 1,
 					matchType: "exact" as const,
 				}));
 			}
 
-			const exactMatches = exactFuse.search(query);
+			ensureIndex();
+
+			const exactMatches = exactFuseRef.current?.search(query) ?? [];
 			const exactIds = new Set(exactMatches.map((m) => m.item.id));
 
-			const fuzzyMatches = fuzzyFuse
-				.search(query)
-				.filter((m) => !exactIds.has(m.item.id));
+			const fuzzyMatches = (fuzzyFuseRef.current?.search(query) ?? []).filter(
+				(m) => !exactIds.has(m.item.id),
+			);
 
 			return [
 				...exactMatches.map((m) => ({
@@ -76,7 +80,7 @@ export function useHybridSearch<T extends SearchableTask>(tasks: T[]) {
 				})),
 			];
 		},
-		[exactFuse, fuzzyFuse, tasks],
+		[ensureIndex],
 	);
 
 	return { search };

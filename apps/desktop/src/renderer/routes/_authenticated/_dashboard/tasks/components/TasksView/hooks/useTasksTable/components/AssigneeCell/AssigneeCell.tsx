@@ -1,3 +1,4 @@
+import type { SelectUser } from "@superset/db/schema";
 import { Avatar } from "@superset/ui/atoms/Avatar";
 import {
 	DropdownMenu,
@@ -5,30 +6,23 @@ import {
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "@superset/ui/dropdown-menu";
-import { useLiveQuery } from "@tanstack/react-db";
 import type { CellContext } from "@tanstack/react-table";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { HiOutlineUserCircle } from "react-icons/hi2";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import type { TaskWithStatus } from "../../useTasksTable";
 
 interface AssigneeCellProps {
 	info: CellContext<TaskWithStatus, string | null>;
+	users: SelectUser[];
 }
 
-export function AssigneeCell({ info }: AssigneeCellProps) {
+export function AssigneeCell({ info, users }: AssigneeCellProps) {
 	const collections = useCollections();
 	const [open, setOpen] = useState(false);
 
 	const task = info.row.original;
 	const assigneeId = info.getValue();
-
-	const { data: allUsers } = useLiveQuery(
-		(q) => (open ? q.from({ users: collections.users }) : null),
-		[collections, open],
-	);
-
-	const users = useMemo(() => allUsers || [], [allUsers]);
 
 	const handleSelectUser = (userId: string | null) => {
 		if (userId === assigneeId) {

@@ -86,6 +86,13 @@ export function useTasksTable({
 	const rowSelection = useRowSelectionStore((s) => s.rowSelection);
 	const setRowSelection = useRowSelectionStore((s) => s.setRowSelection);
 
+	const { data: allUsers } = useLiveQuery(
+		(q) => q.from({ users: collections.users }),
+		[collections],
+	);
+
+	const users = useMemo(() => allUsers ?? [], [allUsers]);
+
 	const { data: allData, isLoading } = useLiveQuery(
 		(q) =>
 			q
@@ -299,7 +306,7 @@ export function useTasksTable({
 				},
 				cell: (info) => {
 					if (info.cell.getIsPlaceholder()) return null;
-					return <AssigneeCell info={info} />;
+					return <AssigneeCell info={info} users={users} />;
 				},
 			}),
 
@@ -317,7 +324,7 @@ export function useTasksTable({
 				},
 			}),
 		],
-		[],
+		[users],
 	);
 
 	const table = useReactTable({

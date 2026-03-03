@@ -8,6 +8,7 @@ import {
 	HiOutlineCpuChip,
 } from "react-icons/hi2";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { navigateToWorkspace as navigateToWorkspaceRoute } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { useTabsStore } from "renderer/stores/tabs/store";
 
 function formatMemory(bytes: number): string {
@@ -55,7 +56,7 @@ export function ResourceConsumption() {
 	};
 
 	const navigateToWorkspace = (workspaceId: string) => {
-		navigate({ to: `/workspace/${workspaceId}` });
+		void navigateToWorkspaceRoute(workspaceId, navigate);
 		setOpen(false);
 	};
 
@@ -65,7 +66,7 @@ export function ResourceConsumption() {
 			setActiveTab(workspaceId, pane.tabId);
 			setFocusedPane(pane.tabId, paneId);
 		}
-		navigate({ to: `/workspace/${workspaceId}` });
+		void navigateToWorkspaceRoute(workspaceId, navigate);
 		setOpen(false);
 	};
 

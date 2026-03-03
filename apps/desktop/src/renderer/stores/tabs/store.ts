@@ -99,6 +99,14 @@ const deriveTabName = (
 	return `Multiple panes (${tabPanes.length})`;
 };
 
+const areStringArraysEqual = (a: string[], b: string[]): boolean => {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i += 1) {
+		if (a[i] !== b[i]) return false;
+	}
+	return true;
+};
+
 function markAgentNotificationReadForPane(paneId: string): void {
 	useNotificationCenterStore
 		.getState()
@@ -355,6 +363,28 @@ export const useTabsStore = create<TabsStore>()(
 					});
 				},
 
+				setTabAutoTitles: (updates) => {
+					if (updates.length === 0) return;
+					set((state) => {
+						const titleByTabId = new Map<string, string>();
+						for (const update of updates) {
+							if (!update.title) continue;
+							titleByTabId.set(update.tabId, update.title);
+						}
+						if (titleByTabId.size === 0) return state;
+
+						let hasChanges = false;
+						const tabs = state.tabs.map((tab) => {
+							const nextTitle = titleByTabId.get(tab.id);
+							if (!nextTitle || tab.name === nextTitle) return tab;
+							hasChanges = true;
+							return { ...tab, name: nextTitle };
+						});
+						if (!hasChanges) return state;
+						return { tabs };
+					});
+				},
+
 				setActiveTab: (workspaceId, tabId) => {
 					const state = get();
 					const tab = state.tabs.find((t) => t.id === tabId);
@@ -388,17 +418,34 @@ export const useTabsStore = create<TabsStore>()(
 						}
 					}
 
-					set({
-						activeTabIds: {
+					const nextActiveTabUnchanged =
+						state.activeTabIds[workspaceId] === tabId;
+					const nextHistoryUnchanged = areStringArraysEqual(
+						state.tabHistoryStacks[workspaceId] || [],
+						newHistoryStack,
+					);
+					if (!hasChanges && nextActiveTabUnchanged && nextHistoryUnchanged) {
+						return;
+					}
+
+					const nextState: Partial<TabsState> = {};
+					if (!nextActiveTabUnchanged) {
+						nextState.activeTabIds = {
 							...state.activeTabIds,
 							[workspaceId]: tabId,
-						},
-						tabHistoryStacks: {
+						};
+					}
+					if (!nextHistoryUnchanged) {
+						nextState.tabHistoryStacks = {
 							...state.tabHistoryStacks,
 							[workspaceId]: newHistoryStack,
-						},
-						...(hasChanges ? { panes: newPanes } : {}),
-					});
+						};
+					}
+					if (hasChanges) {
+						nextState.panes = newPanes;
+					}
+
+					set(nextState);
 				},
 
 				reorderTabs: (workspaceId, startIndex, endIndex) => {
@@ -946,20 +993,34 @@ export const useTabsStore = create<TabsStore>()(
 					const pane = state.panes[paneId];
 					if (!pane || pane.tabId !== tabId) return;
 					const resolvedStatus = acknowledgedStatus(pane.status);
+					const currentFocusedPaneId = state.focusedPaneIds[tabId];
+					const focusUnchanged = currentFocusedPaneId === paneId;
+					const statusUnchanged = pane.status === resolvedStatus;
+					if (focusUnchanged && statusUnchanged) {
+						return;
+					}
 					if (pane.status === "review") {
 						markAgentNotificationReadForPane(paneId);
 					}
 
-					set({
-						panes: {
+					const nextState: Pick<TabsState, "panes" | "focusedPaneIds"> = {
+						panes: state.panes,
+						focusedPaneIds: state.focusedPaneIds,
+					};
+					if (!statusUnchanged) {
+						nextState.panes = {
 							...state.panes,
 							[paneId]: { ...pane, status: resolvedStatus },
-						},
-						focusedPaneIds: {
+						};
+					}
+					if (!focusUnchanged) {
+						nextState.focusedPaneIds = {
 							...state.focusedPaneIds,
 							[tabId]: paneId,
-						},
-					});
+						};
+					}
+
+					set(nextState);
 				},
 
 				markPaneAsUsed: (paneId) => {
@@ -1365,58 +1426,91 @@ export const useTabsStore = create<TabsStore>()(
 					if (existingPane?.browser) {
 						// Navigate existing pane and make its tab active
 						const { history: prevHistory, historyIndex } = existingPane.browser;
-						const history = prevHistory.slice(0, historyIndex + 1);
-						history.push({
-							url,
-							title: "",
-							timestamp: Date.now(),
-						});
-						if (history.length > 100) {
+						const currentHistoryEntry = prevHistory[historyIndex];
+						const shouldAppendHistory = currentHistoryEntry?.url !== url;
+						const history = shouldAppendHistory
+							? [
+									...prevHistory.slice(0, historyIndex + 1),
+									{
+										url,
+										title: "",
+										timestamp: Date.now(),
+									},
+								]
+							: prevHistory;
+						if (shouldAppendHistory && history.length > 100) {
 							history.splice(0, history.length - 100);
 						}
+						const nextHistoryIndex = shouldAppendHistory
+							? history.length - 1
+							: historyIndex;
 
 						const currentActiveId = state.activeTabIds[workspaceId];
 						const historyStack = state.tabHistoryStacks[workspaceId] || [];
 						const newHistoryStack = currentActiveId
-							? [
-									currentActiveId,
-									...historyStack.filter((id) => id !== currentActiveId),
-								]
+							? currentActiveId === existingPane.tabId
+								? historyStack
+								: [
+										currentActiveId,
+										...historyStack.filter((id) => id !== currentActiveId),
+									]
 							: historyStack;
 
-						const newPanes = {
-							...state.panes,
-							[existingPane.id]: {
+						const paneNeedsUpdate =
+							shouldAppendHistory || existingPane.name !== "Browser";
+						const newPanes = paneNeedsUpdate
+							? { ...state.panes }
+							: state.panes;
+						if (paneNeedsUpdate) {
+							newPanes[existingPane.id] = {
 								...existingPane,
 								name: "Browser",
 								browser: {
 									...existingPane.browser,
 									currentUrl: url,
 									history,
-									historyIndex: history.length - 1,
+									historyIndex: nextHistoryIndex,
 								},
-							},
-						};
-						const tabName = deriveTabName(newPanes, existingPane.tabId);
+							};
+						}
+						const tabName = paneNeedsUpdate
+							? deriveTabName(newPanes, existingPane.tabId)
+							: (state.tabs.find((t) => t.id === existingPane.tabId)?.name ??
+								"Browser");
+						const focusedPaneUnchanged =
+							state.focusedPaneIds[existingPane.tabId] === existingPane.id;
+						const activeTabUnchanged =
+							state.activeTabIds[workspaceId] === existingPane.tabId;
+						const historyUnchanged = areStringArraysEqual(historyStack, newHistoryStack);
 
-						set({
-							panes: newPanes,
-							tabs: state.tabs.map((t) =>
+						const nextState: Partial<TabsState> = {};
+						if (paneNeedsUpdate) {
+							nextState.panes = newPanes;
+							nextState.tabs = state.tabs.map((t) =>
 								t.id === existingPane.tabId ? { ...t, name: tabName } : t,
-							),
-							activeTabIds: {
+							);
+						}
+						if (!activeTabUnchanged) {
+							nextState.activeTabIds = {
 								...state.activeTabIds,
 								[workspaceId]: existingPane.tabId,
-							},
-							focusedPaneIds: {
+							};
+						}
+						if (!focusedPaneUnchanged) {
+							nextState.focusedPaneIds = {
 								...state.focusedPaneIds,
 								[existingPane.tabId]: existingPane.id,
-							},
-							tabHistoryStacks: {
+							};
+						}
+						if (!historyUnchanged) {
+							nextState.tabHistoryStacks = {
 								...state.tabHistoryStacks,
 								[workspaceId]: newHistoryStack,
-							},
-						});
+							};
+						}
+						if (Object.keys(nextState).length > 0) {
+							set(nextState);
+						}
 					} else {
 						// No existing browser pane — add one to the active tab
 						const resolvedActiveTabId = resolveActiveTabIdForWorkspace({
@@ -1632,6 +1726,15 @@ export const useTabsStore = create<TabsStore>()(
 					const state = get();
 					const pane = state.panes[paneId];
 					if (!pane?.browser) return;
+					const currentViewport = pane.browser.viewport;
+					if (
+						currentViewport?.width === viewport?.width &&
+						currentViewport?.height === viewport?.height &&
+						currentViewport?.deviceScaleFactor === viewport?.deviceScaleFactor &&
+						currentViewport?.mobile === viewport?.mobile
+					) {
+						return;
+					}
 
 					set({
 						panes: {

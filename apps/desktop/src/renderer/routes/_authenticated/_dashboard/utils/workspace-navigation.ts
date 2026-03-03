@@ -24,7 +24,26 @@ export function navigateToWorkspace(
 	},
 ): Promise<void> {
 	const { search, ...rest } = options ?? {};
-	localStorage.setItem("lastViewedWorkspaceId", workspaceId);
+	if (localStorage.getItem("lastViewedWorkspaceId") !== workspaceId) {
+		localStorage.setItem("lastViewedWorkspaceId", workspaceId);
+	}
+
+	// Avoid a no-op route transition when already on this workspace.
+	// This removes unnecessary remount/recompute during repeated project switching.
+	if (typeof window !== "undefined") {
+		const hasSearch = !!search && Object.keys(search).length > 0;
+		const workspacePath = `/workspace/${workspaceId}`;
+		const rawCurrentPath = window.location.hash.startsWith("#")
+			? window.location.hash.slice(1)
+			: window.location.pathname;
+		const currentPath = rawCurrentPath.split("?")[0];
+		const onWorkspaceRoute =
+			currentPath === workspacePath || currentPath.startsWith(`${workspacePath}/`);
+		if (!hasSearch && onWorkspaceRoute) {
+			return Promise.resolve();
+		}
+	}
+
 	return navigate({
 		to: "/workspace/$workspaceId",
 		params: { workspaceId },

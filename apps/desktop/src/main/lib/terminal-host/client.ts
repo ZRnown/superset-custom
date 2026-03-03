@@ -164,8 +164,10 @@ export class TerminalHostClient extends EventEmitter {
 	private controlAuthenticated = false;
 	private streamAuthenticated = false;
 	private connectionState = ConnectionState.DISCONNECTED;
+	private connectWaitPromise: Promise<void> | null = null;
 	private disposed = false;
 	private notifyQueue: string[] = [];
+	private notifyQueueHead = 0;
 	private notifyQueueBytes = 0;
 	private notifyDrainArmed = false;
 	private disconnectArmed = false;
@@ -210,33 +212,38 @@ export class TerminalHostClient extends EventEmitter {
 					"[TerminalHostClient] Connection already in progress, waiting...",
 				);
 			}
-			return new Promise((resolve, reject) => {
-				const startTime = Date.now();
-				const WAIT_TIMEOUT_MS = 10000; // 10 seconds max wait
+			if (!this.connectWaitPromise) {
+				this.connectWaitPromise = new Promise((resolve, reject) => {
+					const startTime = Date.now();
+					const WAIT_TIMEOUT_MS = 10000; // 10 seconds max wait
 
-				const checkConnection = () => {
-					if (
-						this.connectionState === ConnectionState.CONNECTED &&
-						this.controlSocket &&
-						this.streamSocket &&
-						this.controlAuthenticated &&
-						this.streamAuthenticated
-					) {
-						resolve();
-					} else if (this.connectionState === ConnectionState.DISCONNECTED) {
-						reject(new Error("Connection failed while waiting"));
-					} else if (Date.now() - startTime > WAIT_TIMEOUT_MS) {
-						reject(
-							new Error(
-								"Timeout waiting for connection - daemon may be unresponsive",
-							),
-						);
-					} else {
-						setTimeout(checkConnection, 100);
-					}
-				};
-				checkConnection();
-			});
+					const checkConnection = () => {
+						if (
+							this.connectionState === ConnectionState.CONNECTED &&
+							this.controlSocket &&
+							this.streamSocket &&
+							this.controlAuthenticated &&
+							this.streamAuthenticated
+						) {
+							resolve();
+						} else if (this.connectionState === ConnectionState.DISCONNECTED) {
+							reject(new Error("Connection failed while waiting"));
+						} else if (Date.now() - startTime > WAIT_TIMEOUT_MS) {
+							reject(
+								new Error(
+									"Timeout waiting for connection - daemon may be unresponsive",
+								),
+							);
+						} else {
+							setTimeout(checkConnection, 100);
+						}
+					};
+					checkConnection();
+				}).finally(() => {
+					this.connectWaitPromise = null;
+				});
+			}
+			return this.connectWaitPromise;
 		}
 
 		this.connectionState = ConnectionState.CONNECTING;
@@ -652,8 +659,10 @@ export class TerminalHostClient extends EventEmitter {
 		this.controlAuthenticated = false;
 		this.streamAuthenticated = false;
 		this.connectionState = ConnectionState.DISCONNECTED;
+		this.connectWaitPromise = null;
 
 		this.notifyQueue = [];
+		this.notifyQueueHead = 0;
 		this.notifyQueueBytes = 0;
 		this.notifyDrainArmed = false;
 
@@ -1245,7 +1254,7 @@ export class TerminalHostClient extends EventEmitter {
 		}
 
 		// If we're already backpressured, just queue.
-		if (this.notifyDrainArmed || this.notifyQueue.length > 0) {
+		if (this.notifyDrainArmed || this.notifyQueueHead < this.notifyQueue.length) {
 			this.notifyQueue.push(message);
 			this.notifyQueueBytes += messageBytes;
 			return true;
@@ -1262,20 +1271,47 @@ export class TerminalHostClient extends EventEmitter {
 
 	private flushNotifyQueue(): void {
 		if (!this.controlSocket) return;
-		if (!this.notifyDrainArmed && this.notifyQueue.length === 0) return;
+		if (
+			!this.notifyDrainArmed &&
+			this.notifyQueueHead >= this.notifyQueue.length
+		) {
+			return;
+		}
 
 		this.notifyDrainArmed = false;
 
-		while (this.notifyQueue.length > 0) {
-			const message = this.notifyQueue.shift();
-			if (!message) break;
-			this.notifyQueueBytes -= Buffer.byteLength(message, "utf8");
+		while (this.notifyQueueHead < this.notifyQueue.length) {
+			const queueIndex = this.notifyQueueHead;
+			const message = this.notifyQueue[queueIndex];
+			this.notifyQueueHead = queueIndex + 1;
+			if (!message) continue;
+			this.notifyQueue[queueIndex] = "";
+			this.notifyQueueBytes = Math.max(
+				0,
+				this.notifyQueueBytes - Buffer.byteLength(message, "utf8"),
+			);
 
 			const canWrite = this.controlSocket.write(message);
 			if (!canWrite) {
 				this.notifyDrainArmed = true;
+				this.compactNotifyQueue();
 				return;
 			}
+		}
+
+		this.compactNotifyQueue();
+	}
+
+	private compactNotifyQueue(): void {
+		if (this.notifyQueueHead >= this.notifyQueue.length) {
+			this.notifyQueue = [];
+			this.notifyQueueHead = 0;
+			return;
+		}
+
+		if (this.notifyQueueHead > 1024) {
+			this.notifyQueue = this.notifyQueue.slice(this.notifyQueueHead);
+			this.notifyQueueHead = 0;
 		}
 	}
 

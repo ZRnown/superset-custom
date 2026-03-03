@@ -189,16 +189,17 @@ export async function processSlackMention({
 	}
 
 	try {
-		const imageAssets = await extractSlackImageAssets({
-			eventFiles: event.files,
-			slack,
-			slackToken: connection.accessToken,
-		});
-
-		const resolve = await resolveUserMentions({
-			texts: [event.text ?? ""],
-			slack,
-		});
+		const [imageAssets, resolve] = await Promise.all([
+			extractSlackImageAssets({
+				eventFiles: event.files,
+				slack,
+				slackToken: connection.accessToken,
+			}),
+			resolveUserMentions({
+				texts: [event.text ?? ""],
+				slack,
+			}),
+		]);
 
 		const result = await runSlackAgent({
 			prompt: resolve(event.text ?? ""),

@@ -16,6 +16,7 @@ import { createFileRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { env } from "renderer/env.renderer";
 import { apiTrpcClient } from "renderer/lib/api-trpc-client";
 import { authClient } from "renderer/lib/auth-client";
 import { electronTrpc } from "renderer/lib/electron-trpc";
@@ -151,6 +152,10 @@ export function CreateOrganization() {
 		} finally {
 			setIsSubmitting(false);
 		}
+	}
+
+	if (env.DESKTOP_LOCAL_MODE) {
+		return <Navigate to="/" replace />;
 	}
 
 	if (!isSignedIn) {

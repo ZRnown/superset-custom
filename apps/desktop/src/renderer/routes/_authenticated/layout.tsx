@@ -42,9 +42,8 @@ function AuthenticatedLayout() {
 	const navigate = useNavigate();
 	const utils = electronTrpc.useUtils();
 
-	const isLocalMode = env.DESKTOP_LOCAL_MODE || env.SKIP_ENV_VALIDATION;
-	const isSignedIn = isLocalMode || !!session?.user;
-	const activeOrganizationId = isLocalMode
+	const isSignedIn = env.SKIP_ENV_VALIDATION || !!session?.user;
+	const activeOrganizationId = env.SKIP_ENV_VALIDATION
 		? MOCK_ORG_ID
 		: session?.session?.activeOrganizationId;
 
@@ -80,12 +79,12 @@ function AuthenticatedLayout() {
 		},
 	});
 
-	if (isPending && !hasLocalToken && !isLocalMode) {
+	if (isPending && !hasLocalToken && !env.SKIP_ENV_VALIDATION) {
 		return <Navigate to="/sign-in" replace />;
 	}
 	if (
 		(isPending || (isRefetching && !session?.user && hasLocalToken)) &&
-		!isLocalMode
+		!env.SKIP_ENV_VALIDATION
 	) {
 		return (
 			<div className="flex h-screen w-screen items-center justify-center bg-background">

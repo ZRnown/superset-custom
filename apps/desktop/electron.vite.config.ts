@@ -49,10 +49,6 @@ export default defineConfig({
 				process.env.SKIP_ENV_VALIDATION,
 				"",
 			),
-			"process.env.DESKTOP_LOCAL_MODE": defineEnv(
-				process.env.DESKTOP_LOCAL_MODE,
-				"true",
-			),
 			"process.env.NEXT_PUBLIC_API_URL": defineEnv(
 				process.env.NEXT_PUBLIC_API_URL,
 				"https://api.superset.sh",
@@ -93,7 +89,6 @@ export default defineConfig({
 			),
 			"process.env.NEXT_PUBLIC_OUTLIT_KEY": defineEnv(
 				process.env.NEXT_PUBLIC_OUTLIT_KEY,
-				"local-dev-outlit",
 			),
 		},
 
@@ -144,10 +139,6 @@ export default defineConfig({
 				process.env.SKIP_ENV_VALIDATION,
 				"",
 			),
-			"process.env.DESKTOP_LOCAL_MODE": defineEnv(
-				process.env.DESKTOP_LOCAL_MODE,
-				"true",
-			),
 			__APP_VERSION__: defineEnv(version),
 		},
 
@@ -167,10 +158,6 @@ export default defineConfig({
 			"process.env.SKIP_ENV_VALIDATION": defineEnv(
 				process.env.SKIP_ENV_VALIDATION,
 				"",
-			),
-			"process.env.DESKTOP_LOCAL_MODE": defineEnv(
-				process.env.DESKTOP_LOCAL_MODE,
-				"true",
 			),
 			"process.platform": defineEnv(process.platform),
 			"process.env.NEXT_PUBLIC_API_URL": defineEnv(
@@ -217,7 +204,6 @@ export default defineConfig({
 			),
 			"import.meta.env.NEXT_PUBLIC_OUTLIT_KEY": defineEnv(
 				process.env.NEXT_PUBLIC_OUTLIT_KEY,
-				"local-dev-outlit",
 			),
 		},
 

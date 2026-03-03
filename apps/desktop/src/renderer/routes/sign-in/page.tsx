@@ -18,11 +18,6 @@ function SignInPage() {
 	const { data: session, isPending } = authClient.useSession();
 	const signInMutation = electronTrpc.auth.signIn.useMutation();
 
-	// Local-first desktop mode: bypass cloud sign-in entirely.
-	if (env.DESKTOP_LOCAL_MODE) {
-		return <Navigate to="/workspace" replace />;
-	}
-
 	// Dev bypass: skip sign-in entirely
 	if (env.SKIP_ENV_VALIDATION) {
 		return <Navigate to="/workspace" replace />;

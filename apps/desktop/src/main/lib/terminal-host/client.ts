@@ -213,7 +213,7 @@ export class TerminalHostClient extends EventEmitter {
 				);
 			}
 			if (!this.connectWaitPromise) {
-				this.connectWaitPromise = new Promise((resolve, reject) => {
+				this.connectWaitPromise = new Promise<void>((resolve, reject) => {
 					const startTime = Date.now();
 					const WAIT_TIMEOUT_MS = 10000; // 10 seconds max wait
 
@@ -243,7 +243,10 @@ export class TerminalHostClient extends EventEmitter {
 					this.connectWaitPromise = null;
 				});
 			}
-			return this.connectWaitPromise;
+			if (this.connectWaitPromise) {
+				return this.connectWaitPromise;
+			}
+			return;
 		}
 
 		this.connectionState = ConnectionState.CONNECTING;

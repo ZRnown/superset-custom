@@ -1730,8 +1730,7 @@ export const useTabsStore = create<TabsStore>()(
 					if (
 						currentViewport?.width === viewport?.width &&
 						currentViewport?.height === viewport?.height &&
-						currentViewport?.deviceScaleFactor === viewport?.deviceScaleFactor &&
-						currentViewport?.mobile === viewport?.mobile
+						currentViewport?.name === viewport?.name
 					) {
 						return;
 					}

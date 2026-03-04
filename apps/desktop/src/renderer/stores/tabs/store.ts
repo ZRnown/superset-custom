@@ -6,7 +6,6 @@ import { trpcTabsStorage } from "renderer/lib/trpc-storage";
 import { acknowledgedStatus } from "shared/tabs-types";
 import { create } from "zustand";
 import { devtools, persist } from "zustand/middleware";
-import { useNotificationCenterStore } from "../notification-center/store";
 import { movePaneToNewTab, movePaneToTab } from "./actions/move-pane";
 import type {
 	AddFileViewerPaneOptions,
@@ -107,11 +106,6 @@ const areStringArraysEqual = (a: string[], b: string[]): boolean => {
 	return true;
 };
 
-function markAgentNotificationReadForPane(paneId: string): void {
-	useNotificationCenterStore
-		.getState()
-		.markReadByDedupeKey(`agent-pane:${paneId}`);
-}
 export const useTabsStore = create<TabsStore>()(
 	devtools(
 		persist(
@@ -995,9 +989,6 @@ export const useTabsStore = create<TabsStore>()(
 					if (focusUnchanged && statusUnchanged) {
 						return;
 					}
-					if (pane.status === "review") {
-						markAgentNotificationReadForPane(paneId);
-					}
 
 					const nextState: Pick<TabsState, "panes" | "focusedPaneIds"> = {
 						panes: state.panes,
@@ -1006,7 +997,6 @@ export const useTabsStore = create<TabsStore>()(
 					if (!statusUnchanged) {
 						nextState.panes = {
 							...state.panes,
-							[paneId]: { ...pane, status: resolvedStatus },
 							[paneId]: { ...pane, status: resolvedStatus },
 						};
 					}

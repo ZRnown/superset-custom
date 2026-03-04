@@ -6,6 +6,7 @@ import { setSkipQuitConfirmation } from "main/index";
 import { prerelease } from "semver";
 import { AUTO_UPDATE_STATUS, type AutoUpdateStatus } from "shared/auto-update";
 import { PLATFORM } from "shared/constants";
+import { getWorkspaceName } from "shared/env.shared";
 
 const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4; // 4 hours
 
@@ -22,6 +23,8 @@ function isPrereleaseBuild(): boolean {
 
 const IS_PRERELEASE = isPrereleaseBuild();
 const IS_AUTO_UPDATE_PLATFORM = PLATFORM.IS_MAC || PLATFORM.IS_LINUX;
+const WORKSPACE_NAME = getWorkspaceName();
+const IS_CUSTOM_WORKSPACE_BUILD = Boolean(WORKSPACE_NAME);
 
 // Use explicit feed URLs to ensure we always fetch platform-specific manifests
 // (for example latest-mac.yml and latest-linux.yml) from the correct release.
@@ -30,6 +33,14 @@ const IS_AUTO_UPDATE_PLATFORM = PLATFORM.IS_MAC || PLATFORM.IS_LINUX;
 const UPDATE_FEED_URL = IS_PRERELEASE
 	? "https://github.com/superset-sh/superset/releases/download/desktop-canary"
 	: "https://github.com/superset-sh/superset/releases/latest/download";
+
+function shouldRunAutoUpdater(): boolean {
+	return (
+		env.NODE_ENV !== "development" &&
+		IS_AUTO_UPDATE_PLATFORM &&
+		!IS_CUSTOM_WORKSPACE_BUILD
+	);
+}
 
 export interface AutoUpdateStatusEvent {
 	status: AutoUpdateStatus;
@@ -102,7 +113,7 @@ export function dismissUpdate(): void {
 }
 
 export function checkForUpdates(): void {
-	if (env.NODE_ENV === "development" || !IS_AUTO_UPDATE_PLATFORM) {
+	if (!shouldRunAutoUpdater()) {
 		return;
 	}
 	isDismissed = false;
@@ -124,6 +135,18 @@ export function checkForUpdatesInteractive(): void {
 			type: "info",
 			title: "Updates",
 			message: "Auto-updates are disabled in development mode.",
+		});
+		return;
+	}
+	if (IS_CUSTOM_WORKSPACE_BUILD) {
+		dialog.showMessageBox({
+			type: "info",
+			title: "Updates Disabled",
+			message:
+				"Auto-updates are disabled for custom workspace builds. Rebase from upstream/main to sync official updates.",
+			detail: WORKSPACE_NAME
+				? `Current workspace: ${WORKSPACE_NAME}`
+				: undefined,
 		});
 		return;
 	}
@@ -200,7 +223,12 @@ export function simulateError(): void {
 }
 
 export function setupAutoUpdater(): void {
-	if (env.NODE_ENV === "development" || !IS_AUTO_UPDATE_PLATFORM) {
+	if (!shouldRunAutoUpdater()) {
+		if (IS_CUSTOM_WORKSPACE_BUILD) {
+			console.info(
+				`[auto-updater] Disabled for custom workspace build: ${WORKSPACE_NAME}`,
+			);
+		}
 		return;
 	}
 

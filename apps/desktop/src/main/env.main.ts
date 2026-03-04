@@ -47,9 +47,9 @@ export const env = createEnv({
 		NEXT_PUBLIC_OUTLIT_KEY: process.env.NEXT_PUBLIC_OUTLIT_KEY,
 	},
 	emptyStringAsUndefined: true,
-	// Only allow skipping validation in development (never in production)
-	skipValidation:
-		process.env.NODE_ENV === "development" && !!process.env.SKIP_ENV_VALIDATION,
+	// Desktop local-only fork mode:
+	// force env validation bypass so app boot does not depend on cloud auth setup.
+	skipValidation: true,
 
 	// Main process runs in trusted Node.js environment
 	isServer: true,

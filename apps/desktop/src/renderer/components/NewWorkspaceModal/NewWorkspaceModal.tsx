@@ -1,6 +1,7 @@
 import {
 	AGENT_PRESET_COMMANDS,
 	buildAgentPromptCommand,
+	buildCodexResumeCommand,
 } from "@superset/shared/agent-command";
 import {
 	type AgentLaunchRequest,
@@ -19,6 +20,7 @@ import {
 	useCreateWorkspace,
 	useUpdateWorkspace,
 } from "renderer/react-query/workspaces";
+import { navigateToWorkspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import {
 	useCloseNewWorkspaceModal,
 	useNewWorkspaceModalOpen,
@@ -32,14 +34,24 @@ import type { ImportSourceTab } from "./components/ExistingWorktreesList";
 import { ImportFlow } from "./components/ImportFlow";
 import { NewWorkspaceAdvancedOptions } from "./components/NewWorkspaceAdvancedOptions";
 import {
+	type CodexLaunchMode,
+	type CodexSessionOption,
 	NewWorkspaceCreateFlow,
 	type WorkspaceCreateAgent,
+	type WorkspaceCreateMode,
 } from "./components/NewWorkspaceCreateFlow";
 import { NewWorkspaceHeader } from "./components/NewWorkspaceHeader";
 import { ProjectSelector } from "./components/ProjectSelector";
 
 type Mode = "existing" | "new";
 const WORKSPACE_AGENT_STORAGE_KEY = "lastSelectedWorkspaceCreateAgent";
+const WORKSPACE_CODEX_LAUNCH_MODE_STORAGE_KEY =
+	"lastSelectedWorkspaceCodexLaunchMode";
+const CODEX_LAUNCH_MODES = ["new", "resume-picker", "resume-last"] as const;
+
+function normalizeWorkspacePath(path: string): string {
+	return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
 
 export function NewWorkspaceModal() {
 	const navigate = useNavigate();
@@ -59,6 +71,8 @@ export function NewWorkspaceModal() {
 	const [showAdvanced, setShowAdvanced] = useState(false);
 	const [runSetupScript, setRunSetupScript] = useState(true);
 	const [importTab, setImportTab] = useState<ImportSourceTab>("pull-request");
+	const [workspaceCreateMode, setWorkspaceCreateMode] =
+		useState<WorkspaceCreateMode>("agent");
 	const [selectedAgent, setSelectedAgent] = useState<WorkspaceCreateAgent>(
 		() => {
 			if (typeof window === "undefined") return "none";
@@ -70,6 +84,21 @@ export function NewWorkspaceModal() {
 				: "none";
 		},
 	);
+	const [codexLaunchMode, setCodexLaunchMode] = useState<CodexLaunchMode>(
+		() => {
+			if (typeof window === "undefined") return "new";
+			const stored = window.localStorage.getItem(
+				WORKSPACE_CODEX_LAUNCH_MODE_STORAGE_KEY,
+			);
+			return stored &&
+				(CODEX_LAUNCH_MODES as readonly string[]).includes(stored)
+				? (stored as CodexLaunchMode)
+				: "new";
+		},
+	);
+	const [selectedCodexSessionId, setSelectedCodexSessionId] = useState("");
+	const [isOpeningSessionWorkspace, setIsOpeningSessionWorkspace] =
+		useState(false);
 	const runSetupScriptRef = useRef(true);
 	runSetupScriptRef.current = runSetupScript;
 	const titleInputRef = useRef<HTMLTextAreaElement>(null);
@@ -80,6 +109,20 @@ export function NewWorkspaceModal() {
 		{ id: selectedProjectId ?? "" },
 		{ enabled: !!selectedProjectId },
 	);
+	const { data: codexSessionHistory, isLoading: isCodexSessionsLoading } =
+		electronTrpc.projects.getCodexSessionHistory.useQuery(
+			{
+				projectId: selectedProjectId ?? "",
+				limit: 50,
+			},
+			{
+				enabled:
+					!!selectedProjectId &&
+					workspaceCreateMode === "agent" &&
+					selectedAgent === "codex" &&
+					codexLaunchMode === "resume-picker",
+			},
+		);
 	const {
 		data: branchData,
 		isLoading: isBranchesLoading,
@@ -95,9 +138,15 @@ export function NewWorkspaceModal() {
 	const { data: globalBranchPrefix } =
 		electronTrpc.settings.getBranchPrefix.useQuery();
 	const { data: gitInfo } = electronTrpc.settings.getGitInfo.useQuery();
+	const utils = electronTrpc.useUtils();
 	const terminalCreateOrAttach =
 		electronTrpc.terminal.createOrAttach.useMutation();
 	const terminalWrite = electronTrpc.terminal.write.useMutation();
+	const importAllWorktrees =
+		electronTrpc.workspaces.importAllWorktrees.useMutation();
+	const openWorktree = electronTrpc.workspaces.openWorktree.useMutation();
+	const createBranchWorkspace =
+		electronTrpc.workspaces.createBranchWorkspace.useMutation();
 	const createWorkspace = useCreateWorkspace({
 		resolveInitialCommands: (commands) =>
 			runSetupScriptRef.current ? commands : null,
@@ -130,6 +179,53 @@ export function NewWorkspaceModal() {
 			b.name.toLowerCase().includes(searchLower),
 		);
 	}, [branchData?.branches, branchSearch]);
+	const codexSessionOptions = useMemo<CodexSessionOption[]>(() => {
+		const sessions = (codexSessionHistory?.sessions ?? []).filter(
+			(session) => !session.isSubagent,
+		);
+		return sessions.map((session) => {
+			const date = new Date(session.timestamp);
+			const formattedTimestamp = Number.isNaN(date.getTime())
+				? session.timestampIso
+				: date.toLocaleString();
+			const sessionCwd = normalizeWorkspacePath(session.cwd);
+			const projectRoot = normalizeWorkspacePath(project?.mainRepoPath ?? "");
+			const isUnderProject =
+				projectRoot.length > 0 &&
+				(sessionCwd === projectRoot ||
+					sessionCwd.startsWith(`${projectRoot}/`));
+			const shortPath = isUnderProject
+				? sessionCwd.slice(projectRoot.length).replace(/^\/+/, "") || "."
+				: sessionCwd;
+
+			return {
+				id: session.id,
+				timestampLabel: formattedTimestamp,
+				relativePath: shortPath,
+				cwd: sessionCwd,
+				firstUserMessage: session.firstUserMessage,
+				lastUserMessage: session.lastUserMessage,
+				firstAssistantMessage: session.firstAssistantMessage,
+				lastAssistantMessage: session.lastAssistantMessage,
+			};
+		});
+	}, [codexSessionHistory?.sessions, project?.mainRepoPath]);
+	const isResumeFromProjectHistory =
+		workspaceCreateMode === "agent" &&
+		selectedAgent === "codex" &&
+		codexLaunchMode === "resume-picker";
+	const isCodexResumeLaunch =
+		workspaceCreateMode === "agent" &&
+		selectedAgent === "codex" &&
+		codexLaunchMode !== "new";
+	const showPromptInput = !isCodexResumeLaunch;
+	const selectedCodexSession = useMemo(
+		() =>
+			codexSessionOptions.find(
+				(session) => session.id === selectedCodexSessionId,
+			) ?? null,
+		[codexSessionOptions, selectedCodexSessionId],
+	);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset form each time the modal opens
 	useEffect(() => {
@@ -148,6 +244,42 @@ export function NewWorkspaceModal() {
 		setSelectedAgent("none");
 		window.localStorage.setItem(WORKSPACE_AGENT_STORAGE_KEY, "none");
 	}, [selectedAgent]);
+
+	useEffect(() => {
+		if (!selectedProjectId) {
+			setSelectedCodexSessionId("");
+		}
+	}, [selectedProjectId]);
+
+	useEffect(() => {
+		if (
+			workspaceCreateMode !== "agent" ||
+			selectedAgent !== "codex" ||
+			codexLaunchMode !== "resume-picker"
+		) {
+			return;
+		}
+
+		if (codexSessionOptions.length === 0) {
+			setSelectedCodexSessionId("");
+			return;
+		}
+
+		if (
+			!selectedCodexSessionId ||
+			!codexSessionOptions.some(
+				(option) => option.id === selectedCodexSessionId,
+			)
+		) {
+			setSelectedCodexSessionId(codexSessionOptions[0].id);
+		}
+	}, [
+		codexLaunchMode,
+		codexSessionOptions,
+		selectedAgent,
+		selectedCodexSessionId,
+		workspaceCreateMode,
+	]);
 
 	const effectiveBaseBranch = resolveEffectiveWorkspaceBaseBranch({
 		explicitBaseBranch: baseBranch,
@@ -179,18 +311,20 @@ export function NewWorkspaceModal() {
 		setBranchNameEdited(false);
 		setMode("new");
 		setImportTab("pull-request");
+		setWorkspaceCreateMode("agent");
 		setBaseBranch(null);
 		setBranchSearch("");
 		setShowAdvanced(false);
 		setRunSetupScript(true);
+		setSelectedCodexSessionId("");
 	};
 
 	useEffect(() => {
-		if (isOpen && selectedProjectId && mode === "new") {
+		if (isOpen && selectedProjectId && mode === "new" && showPromptInput) {
 			const timer = setTimeout(() => titleInputRef.current?.focus(), 50);
 			return () => clearTimeout(timer);
 		}
-	}, [isOpen, selectedProjectId, mode]);
+	}, [isOpen, selectedProjectId, mode, showPromptInput]);
 
 	const handleKeyDown = (e: React.KeyboardEvent) => {
 		const isTextareaTarget = e.target instanceof HTMLTextAreaElement;
@@ -206,7 +340,7 @@ export function NewWorkspaceModal() {
 			!e.shiftKey &&
 			mode === "new" &&
 			selectedProjectId &&
-			!createWorkspace.isPending
+			!isCreateDisabled
 		) {
 			e.preventDefault();
 			handleCreateWorkspace();
@@ -261,10 +395,25 @@ export function NewWorkspaceModal() {
 			onImportRepo={handleImportRepo}
 		/>
 	);
-	const isCreateDisabled = createWorkspace.isPending || isBranchesError;
+	const isSessionWorkspaceMutationPending =
+		importAllWorktrees.isPending ||
+		openWorktree.isPending ||
+		createBranchWorkspace.isPending ||
+		isOpeningSessionWorkspace;
+	const isAgentMode = workspaceCreateMode === "agent";
+	const primaryActionLabel = isAgentMode ? "Open Agent" : "Create Workspace";
+	const isCreateDisabled = isAgentMode
+		? selectedAgent === "none" ||
+			isSessionWorkspaceMutationPending ||
+			(isResumeFromProjectHistory &&
+				(isCodexSessionsLoading ||
+					!selectedCodexSessionId ||
+					codexSessionOptions.length === 0))
+		: createWorkspace.isPending || isBranchesError;
 	const buildLaunchRequestForWorkspace = (
 		workspaceId: string,
 		prompt: string,
+		{ allowCodexResume = true }: { allowCodexResume?: boolean } = {},
 	): AgentLaunchRequest | null => {
 		if (selectedAgent === "none") {
 			return null;
@@ -283,13 +432,26 @@ export function NewWorkspaceModal() {
 			};
 		}
 
-		const command = prompt
-			? buildAgentPromptCommand({
-					prompt,
-					randomId: window.crypto.randomUUID(),
-					agent: selectedAgent,
-				})
-			: (AGENT_PRESET_COMMANDS[selectedAgent][0] ?? null);
+		const command =
+			selectedAgent === "codex" && allowCodexResume && codexLaunchMode !== "new"
+				? buildCodexResumeCommand({
+						mode:
+							codexLaunchMode === "resume-last"
+								? "last"
+								: selectedCodexSessionId
+									? "session"
+									: "picker",
+						sessionId: selectedCodexSessionId || undefined,
+						prompt: prompt || undefined,
+						randomId: window.crypto.randomUUID(),
+					})
+				: prompt
+					? buildAgentPromptCommand({
+							prompt,
+							randomId: window.crypto.randomUUID(),
+							agent: selectedAgent,
+						})
+					: (AGENT_PRESET_COMMANDS[selectedAgent][0] ?? null);
 
 		if (!command) {
 			return null;
@@ -307,15 +469,163 @@ export function NewWorkspaceModal() {
 		};
 	};
 
+	const resolveWorkspaceIdForSession = async (
+		sessionCwd: string,
+	): Promise<string | null> => {
+		if (!selectedProjectId || !project) {
+			return null;
+		}
+
+		await importAllWorktrees.mutateAsync({ projectId: selectedProjectId });
+
+		const [projectWorktrees, allWorkspaces] = await Promise.all([
+			utils.workspaces.getWorktreesByProject.fetch({
+				projectId: selectedProjectId,
+			}),
+			utils.workspaces.getAll.fetch(),
+		]);
+
+		const normalizedSessionPath = normalizeWorkspacePath(sessionCwd);
+		const normalizedMainPath = normalizeWorkspacePath(project.mainRepoPath);
+
+		if (normalizedSessionPath === normalizedMainPath) {
+			const branchWorkspace = allWorkspaces
+				.filter(
+					(workspace) =>
+						workspace.projectId === selectedProjectId &&
+						workspace.type === "branch",
+				)
+				.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0];
+
+			if (branchWorkspace) {
+				return branchWorkspace.id;
+			}
+
+			const createdBranchWorkspace = await createBranchWorkspace.mutateAsync({
+				projectId: selectedProjectId,
+			});
+			return createdBranchWorkspace.workspace.id;
+		}
+
+		const matchedWorktree = projectWorktrees.find(
+			(worktree) =>
+				normalizeWorkspacePath(worktree.path) === normalizedSessionPath,
+		);
+		if (!matchedWorktree) {
+			return null;
+		}
+
+		if (matchedWorktree.workspace) {
+			return matchedWorktree.workspace.id;
+		}
+
+		if (!matchedWorktree.existsOnDisk) {
+			return null;
+		}
+
+		const openedWorkspace = await openWorktree.mutateAsync({
+			worktreeId: matchedWorktree.id,
+		});
+		return openedWorkspace.workspace.id;
+	};
+
+	const resolveBranchWorkspaceId = async (): Promise<string | null> => {
+		if (!selectedProjectId) {
+			return null;
+		}
+
+		const allWorkspaces = await utils.workspaces.getAll.fetch();
+		const branchWorkspace = allWorkspaces
+			.filter(
+				(workspace) =>
+					workspace.projectId === selectedProjectId &&
+					workspace.type === "branch",
+			)
+			.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0];
+
+		if (branchWorkspace) {
+			return branchWorkspace.id;
+		}
+
+		const created = await createBranchWorkspace.mutateAsync({
+			projectId: selectedProjectId,
+		});
+		return created.workspace.id;
+	};
+
 	const handleCreateWorkspace = async () => {
 		if (!selectedProjectId) return;
 		// Keep the agent prompt uncapped; only trim surrounding whitespace.
 		const prompt = title.trim();
 
+		if (workspaceCreateMode === "agent") {
+			if (selectedAgent === "none") {
+				toast.error("Select an agent first");
+				return;
+			}
+			const shouldMoveLaunchTabToLeft =
+				selectedAgent === "codex" && codexLaunchMode !== "new";
+
+			setIsOpeningSessionWorkspace(true);
+			try {
+				const workspaceId = isResumeFromProjectHistory
+					? selectedCodexSession
+						? await resolveWorkspaceIdForSession(selectedCodexSession.cwd)
+						: null
+					: await resolveBranchWorkspaceId();
+
+				if (!workspaceId) {
+					toast.error("Could not open a workspace for this agent session");
+					return;
+				}
+
+				const launchRequest = buildLaunchRequestForWorkspace(
+					workspaceId,
+					prompt,
+					{ allowCodexResume: true },
+				);
+
+				handleClose();
+				await navigateToWorkspace(workspaceId, navigate, { replace: true });
+
+				if (launchRequest) {
+					const launchResult = await launchAgentSession(launchRequest, {
+						source: "new-workspace",
+						createOrAttach: (input) =>
+							terminalCreateOrAttach.mutateAsync(input),
+						write: (input) => terminalWrite.mutateAsync(input),
+					});
+
+					if (launchResult.status === "failed") {
+						toast.error("Failed to start agent", {
+							description:
+								launchResult.error ?? "Failed to start agent session.",
+						});
+						return;
+					}
+
+					if (shouldMoveLaunchTabToLeft && launchResult.tabId) {
+						const { useTabsStore } = await import("renderer/stores/tabs/store");
+						useTabsStore.getState().reorderTabById(launchResult.tabId, 0);
+					}
+				}
+
+				toast.success("Opened agent workspace");
+			} catch (err) {
+				toast.error(
+					err instanceof Error ? err.message : "Failed to open agent workspace",
+				);
+			} finally {
+				setIsOpeningSessionWorkspace(false);
+			}
+			return;
+		}
+
 		const workspaceName = undefined;
 		const launchRequestTemplate = buildLaunchRequestForWorkspace(
 			"pending-workspace",
 			prompt,
+			{ allowCodexResume: false },
 		);
 
 		closeModal();
@@ -389,6 +699,11 @@ export function NewWorkspaceModal() {
 		window.localStorage.setItem(WORKSPACE_AGENT_STORAGE_KEY, value);
 	};
 
+	const handleCodexLaunchModeChange = (mode: CodexLaunchMode) => {
+		setCodexLaunchMode(mode);
+		window.localStorage.setItem(WORKSPACE_CODEX_LAUNCH_MODE_STORAGE_KEY, mode);
+	};
+
 	const handleBaseBranchSelect = (branchName: string) => {
 		setBaseBranch(branchName);
 		setBaseBranchOpen(false);
@@ -424,7 +739,11 @@ export function NewWorkspaceModal() {
 	return (
 		<Dialog modal open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<DialogContent
-				className="sm:max-w-[440px] gap-0 p-0 overflow-hidden"
+				className={`gap-0 p-0 overflow-hidden ${
+					workspaceCreateMode === "agent"
+						? "sm:max-w-[620px]"
+						: "sm:max-w-[440px]"
+				}`}
 				onKeyDown={handleKeyDown}
 				showCloseButton={false}
 			>
@@ -444,18 +763,36 @@ export function NewWorkspaceModal() {
 						{mode === "new" && (
 							<NewWorkspaceCreateFlow
 								projectSelector={projectSelector}
+								workspaceCreateMode={workspaceCreateMode}
+								onWorkspaceCreateModeChange={setWorkspaceCreateMode}
 								selectedAgent={selectedAgent}
 								agentOptions={selectableAgents}
 								onSelectedAgentChange={handleAgentChange}
+								showCodexLaunchMode={
+									workspaceCreateMode === "agent" && selectedAgent === "codex"
+								}
+								codexLaunchMode={codexLaunchMode}
+								onCodexLaunchModeChange={handleCodexLaunchModeChange}
+								showCodexSessionPicker={isResumeFromProjectHistory}
+								codexSessions={codexSessionOptions}
+								selectedCodexSessionId={selectedCodexSessionId}
+								onSelectedCodexSessionIdChange={setSelectedCodexSessionId}
+								isCodexSessionsLoading={isCodexSessionsLoading}
 								title={title}
 								onTitleChange={setTitle}
 								titleInputRef={titleInputRef}
-								showBranchPreview={branchNameEdited}
+								showPromptInput={showPromptInput}
+								showBranchPreview={
+									workspaceCreateMode === "worktree" && branchNameEdited
+								}
 								branchPreview={branchPreview}
 								effectiveBaseBranch={effectiveBaseBranch}
+								createButtonLabel={primaryActionLabel}
 								onCreateWorkspace={handleCreateWorkspace}
 								isCreateDisabled={isCreateDisabled}
-								advancedOptions={advancedOptions}
+								advancedOptions={
+									workspaceCreateMode === "worktree" ? advancedOptions : null
+								}
 							/>
 						)}
 						{mode === "existing" && (

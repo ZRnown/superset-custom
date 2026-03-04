@@ -49,6 +49,10 @@ export default defineConfig({
 				process.env.SKIP_ENV_VALIDATION,
 				"",
 			),
+			"process.env.DESKTOP_AUTH_MODE": defineEnv(
+				process.env.DESKTOP_AUTH_MODE,
+				"local",
+			),
 			"process.env.NEXT_PUBLIC_API_URL": defineEnv(
 				process.env.NEXT_PUBLIC_API_URL,
 				"https://api.superset.sh",
@@ -143,6 +147,10 @@ export default defineConfig({
 				process.env.SKIP_ENV_VALIDATION,
 				"",
 			),
+			"process.env.DESKTOP_AUTH_MODE": defineEnv(
+				process.env.DESKTOP_AUTH_MODE,
+				"local",
+			),
 			__APP_VERSION__: defineEnv(version),
 		},
 
@@ -162,6 +170,10 @@ export default defineConfig({
 			"process.env.SKIP_ENV_VALIDATION": defineEnv(
 				process.env.SKIP_ENV_VALIDATION,
 				"",
+			),
+			"process.env.DESKTOP_AUTH_MODE": defineEnv(
+				process.env.DESKTOP_AUTH_MODE,
+				"local",
 			),
 			"process.platform": defineEnv(process.platform),
 			"process.env.NEXT_PUBLIC_API_URL": defineEnv(

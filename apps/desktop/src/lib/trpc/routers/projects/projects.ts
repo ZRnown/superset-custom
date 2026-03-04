@@ -8,6 +8,7 @@ import {
 	type SelectProject,
 	settings,
 	workspaces,
+	worktrees,
 } from "@superset/local-db";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, isNull, not } from "drizzle-orm";
@@ -40,6 +41,7 @@ import {
 	refreshDefaultBranch,
 	sanitizeAuthorPrefix,
 } from "../workspaces/utils/git";
+import { listCodexSessionsForProjectPaths } from "./utils/codex-sessions";
 import { getDefaultProjectColor } from "./utils/colors";
 import { discoverAndSaveProjectIcon } from "./utils/favicon-discovery";
 import { fetchGitHubOwner, getGitHubAvatarUrl } from "./utils/github";
@@ -290,6 +292,44 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 				.orderBy(desc(projects.lastOpenedAt))
 				.all();
 		}),
+
+		getCodexSessionHistory: publicProcedure
+			.input(
+				z.object({
+					projectId: z.string(),
+					limit: z.number().int().min(1).max(100).optional(),
+				}),
+			)
+			.query(async ({ input }) => {
+				const project = localDb
+					.select()
+					.from(projects)
+					.where(eq(projects.id, input.projectId))
+					.get();
+
+				if (!project) {
+					throw new TRPCError({
+						code: "NOT_FOUND",
+						message: `Project ${input.projectId} not found`,
+					});
+				}
+
+				const projectWorktrees = localDb
+					.select({ path: worktrees.path })
+					.from(worktrees)
+					.where(eq(worktrees.projectId, input.projectId))
+					.all();
+
+				const sessions = await listCodexSessionsForProjectPaths({
+					projectPaths: [
+						project.mainRepoPath,
+						...projectWorktrees.map((worktree) => worktree.path),
+					],
+					limit: input.limit ?? 30,
+				});
+
+				return { sessions };
+			}),
 
 		selectDirectory: publicProcedure
 			.input(

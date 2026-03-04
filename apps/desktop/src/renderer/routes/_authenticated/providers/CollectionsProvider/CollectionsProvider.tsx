@@ -39,11 +39,17 @@ export function preloadActiveOrganizationCollections(
 
 export function CollectionsProvider({ children }: { children: ReactNode }) {
 	const { data: session, refetch: refetchSession } = authClient.useSession();
-	const useElectricCloud = useFeatureFlagEnabled(FEATURE_FLAGS.ELECTRIC_CLOUD);
+	const electricCloudFlag = useFeatureFlagEnabled(FEATURE_FLAGS.ELECTRIC_CLOUD);
 	const [isSwitching, setIsSwitching] = useState(false);
 	const activeOrganizationId = env.SKIP_ENV_VALIDATION
 		? MOCK_ORG_ID
 		: session?.session?.activeOrganizationId;
+	const useElectricCloud =
+		electricCloudFlag ??
+		// In local no-login mode PostHog may be unset, so feature flags never resolve.
+		(env.SKIP_ENV_VALIDATION || !env.NEXT_PUBLIC_POSTHOG_KEY
+			? false
+			: undefined);
 
 	const switchOrganization = useCallback(
 		async (organizationId: string) => {

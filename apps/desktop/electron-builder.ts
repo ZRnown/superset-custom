@@ -5,18 +5,44 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { config as loadDotenv } from "dotenv";
 import type { Configuration } from "electron-builder";
 import pkg from "./package.json";
 
 const currentYear = new Date().getFullYear();
 const author = pkg.author?.name ?? pkg.author;
-const productName = pkg.productName;
+
+// Load root .env so local custom workspace builds can isolate app identity/protocol.
+loadDotenv({
+	path: join(__dirname, "../../.env"),
+	override: false,
+	quiet: true,
+});
+
+function resolveWorkspaceName(raw?: string): string | undefined {
+	if (!raw) return undefined;
+	const normalized = raw
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, "-")
+		.slice(0, 32);
+	if (!normalized || normalized === "superset") return undefined;
+	return normalized;
+}
+
+const workspaceName = resolveWorkspaceName(process.env.SUPERSET_WORKSPACE_NAME);
+const protocolScheme = workspaceName ? `superset-${workspaceName}` : "superset";
+const appId = workspaceName
+	? `com.superset.desktop.${workspaceName}`
+	: "com.superset.desktop";
+const productName = workspaceName
+	? `${pkg.productName} (${workspaceName})`
+	: pkg.productName;
 const macIconPath = join(pkg.resources, "build/icons/icon.icns");
 const linuxIconPath = join(pkg.resources, "build/icons");
 const winIconPath = join(pkg.resources, "build/icons/icon.ico");
 
 const config: Configuration = {
-	appId: "com.superset.desktop",
+	appId,
 	productName,
 	copyright: `Copyright © ${currentYear} — ${author}`,
 	electronVersion: pkg.devDependencies.electron.replace(/^\^/, ""),
@@ -176,7 +202,7 @@ const config: Configuration = {
 	// Deep linking protocol
 	protocols: {
 		name: productName,
-		schemes: ["superset"],
+		schemes: [protocolScheme],
 	},
 
 	// Linux

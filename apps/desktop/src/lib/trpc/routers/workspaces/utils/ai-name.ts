@@ -1,5 +1,3 @@
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { Agent } from "@mastra/core/agent";
 import {
 	getCredentialsFromConfig,
 	getCredentialsFromKeychain,
@@ -12,6 +10,31 @@ export async function generateWorkspaceNameFromPrompt(
 		const credentials =
 			getCredentialsFromConfig() ?? getCredentialsFromKeychain();
 		if (!credentials) return null;
+
+		const anthropicModuleName = "@ai-sdk/anthropic";
+		const mastraAgentModuleName = "@mastra/core/agent";
+		const anthropicLib = (await import(anthropicModuleName)) as {
+			createAnthropic?: (input: { apiKey: string }) => (model: string) => unknown;
+		};
+		const mastraAgentLib = (await import(mastraAgentModuleName)) as {
+			Agent?: new (input: {
+				id: string;
+				name: string;
+				instructions: string;
+				model: unknown;
+			}) => {
+				generateTitleFromUserMessage: (input: {
+					message: string;
+					tracingContext: Record<string, never>;
+				}) => Promise<string | null | undefined>;
+			};
+		};
+
+		const createAnthropic = anthropicLib.createAnthropic;
+		const Agent = mastraAgentLib.Agent;
+		if (!createAnthropic || !Agent) {
+			return null;
+		}
 
 		const anthropic = createAnthropic({ apiKey: credentials.apiKey });
 

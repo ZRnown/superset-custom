@@ -70,11 +70,13 @@ export async function collectResourceMetrics(): Promise<ResourceMetricsSnapshot>
 	const sessionPidTrees = await Promise.all(
 		allEntries.map(async (entry) => ({
 			entry,
-			treePids: await getProcessTree(entry.pid),
+			treePids: Array.from(new Set(await getProcessTree(entry.pid))),
 		})),
 	);
 
-	const allPids = sessionPidTrees.flatMap((s) => s.treePids);
+	const allPids = Array.from(
+		new Set(sessionPidTrees.flatMap((session) => session.treePids)),
+	);
 	let pidStats: Record<number, pidusage.Status> = {};
 	if (allPids.length > 0) {
 		try {

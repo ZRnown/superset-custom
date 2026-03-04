@@ -54,9 +54,9 @@ const rawEnv = {
 	SENTRY_DSN_DESKTOP: import.meta.env.SENTRY_DSN_DESKTOP as string | undefined,
 };
 
-// Only allow skipping validation in development (never in production)
-const SKIP_ENV_VALIDATION =
-	process.env.NODE_ENV === "development" && !!process.env.SKIP_ENV_VALIDATION;
+// Desktop local-only fork mode:
+// force auth/env validation bypass so app always opens without login.
+const SKIP_ENV_VALIDATION = true;
 
 export const env = {
 	...(SKIP_ENV_VALIDATION

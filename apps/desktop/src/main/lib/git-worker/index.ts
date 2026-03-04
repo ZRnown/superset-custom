@@ -8,6 +8,7 @@
  * main-thread execution (default: enabled).
  */
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { GitWorkerPool } from "./pool";
 import type { GitTaskPayloads, GitTaskResults } from "./types";
@@ -16,9 +17,35 @@ import type { GitTaskPayloads, GitTaskResults } from "./types";
 // Feature flag
 // ---------------------------------------------------------------------------
 
-const GIT_WORKER_ENABLED = process.env.SUPERSET_GIT_WORKER !== "0";
+function resolveWorkerScriptPath(): string | null {
+	const directPath = join(__dirname, "git-worker-thread.js");
+	if (existsSync(directPath)) {
+		return directPath;
+	}
+
+	const cwdDistPath = join(
+		process.cwd(),
+		"dist",
+		"main",
+		"git-worker-thread.js",
+	);
+	if (existsSync(cwdDistPath)) {
+		return cwdDistPath;
+	}
+
+	return null;
+}
 
 const GIT_WORKER_DEBUG = process.env.SUPERSET_GIT_WORKER_DEBUG === "1";
+const GIT_WORKER_REQUESTED = process.env.SUPERSET_GIT_WORKER !== "0";
+const WORKER_SCRIPT_PATH = resolveWorkerScriptPath();
+const GIT_WORKER_ENABLED = GIT_WORKER_REQUESTED && WORKER_SCRIPT_PATH !== null;
+
+if (GIT_WORKER_REQUESTED && !WORKER_SCRIPT_PATH) {
+	console.warn(
+		"[git-worker] Worker script not found, falling back to main-thread git execution.",
+	);
+}
 
 // ---------------------------------------------------------------------------
 // Singleton pool
@@ -32,8 +59,10 @@ let pool: GitWorkerPool | null = null;
  * to the same output directory alongside the main index.js.
  */
 function getWorkerScriptPath(): string {
-	// __dirname points to dist/main/ in the built app
-	return join(__dirname, "git-worker-thread.js");
+	if (WORKER_SCRIPT_PATH) {
+		return WORKER_SCRIPT_PATH;
+	}
+	throw new Error("git-worker-thread.js not found");
 }
 
 function getPool(): GitWorkerPool {

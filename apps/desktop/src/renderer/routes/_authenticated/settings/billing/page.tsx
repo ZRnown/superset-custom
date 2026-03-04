@@ -1,22 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useMemo } from "react";
-import { useSettingsSearchQuery } from "renderer/stores/settings-state";
-import { getMatchingItemsForSection } from "../utils/settings-search";
-import { BillingOverview } from "./components/BillingOverview";
+import { createFileRoute, Navigate } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_authenticated/settings/billing/")({
 	component: BillingPage,
 });
 
 function BillingPage() {
-	const searchQuery = useSettingsSearchQuery();
-
-	const visibleItems = useMemo(() => {
-		if (!searchQuery) return null;
-		return getMatchingItemsForSection(searchQuery, "billing").map(
-			(item) => item.id,
-		);
-	}, [searchQuery]);
-
-	return <BillingOverview visibleItems={visibleItems} />;
+	return <Navigate to="/settings/appearance" replace />;
 }

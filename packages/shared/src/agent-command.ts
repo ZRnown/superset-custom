@@ -95,6 +95,14 @@ function buildHeredoc(
 	].join("\n");
 }
 
+function buildPromptDelimiter(prompt: string, randomId: string): string {
+	let delimiter = `SUPERSET_PROMPT_${randomId.replaceAll("-", "")}`;
+	while (prompt.includes(delimiter)) {
+		delimiter = `${delimiter}_X`;
+	}
+	return delimiter;
+}
+
 const AGENT_COMMANDS: Record<
 	AgentType,
 	(prompt: string, delimiter: string) => string
@@ -126,12 +134,37 @@ export function buildAgentPromptCommand({
 	randomId: string;
 	agent?: AgentType;
 }): string {
-	let delimiter = `SUPERSET_PROMPT_${randomId.replaceAll("-", "")}`;
-	while (prompt.includes(delimiter)) {
-		delimiter = `${delimiter}_X`;
-	}
+	const delimiter = buildPromptDelimiter(prompt, randomId);
 	const builder = AGENT_COMMANDS[agent];
 	return builder(prompt, delimiter);
+}
+
+export const CODEX_RESUME_MODES = ["picker", "last", "session"] as const;
+
+export type CodexResumeMode = (typeof CODEX_RESUME_MODES)[number];
+
+export function buildCodexResumeCommand({
+	mode,
+	sessionId,
+	prompt,
+	randomId = "resume",
+}: {
+	mode: CodexResumeMode;
+	sessionId?: string;
+	prompt?: string;
+	randomId?: string;
+}): string {
+	const baseCommand =
+		mode === "last"
+			? "codex resume --last"
+			: mode === "session" && sessionId
+				? `codex resume ${sessionId}`
+				: "codex resume";
+	if (!prompt) {
+		return baseCommand;
+	}
+	const delimiter = buildPromptDelimiter(prompt, randomId);
+	return buildHeredoc(prompt, delimiter, baseCommand);
 }
 
 export function buildAgentCommand({

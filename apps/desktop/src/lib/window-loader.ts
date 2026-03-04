@@ -1,4 +1,5 @@
 import type { BrowserWindow } from "electron";
+import { app } from "electron";
 import { env } from "shared/env.shared";
 
 /** Window IDs defined in the router configuration */
@@ -17,18 +18,27 @@ export function registerRoute(props: {
 	htmlFile: string;
 	query?: Record<string, string>;
 }): void {
-	const isDev = env.NODE_ENV === "development";
+	const isPackaged = app.isPackaged;
+	const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 
-	if (isDev) {
-		// Development: load from Vite dev server with hash routing
-		const url = `http://localhost:${env.DESKTOP_VITE_PORT}/#/`;
-		console.log("[window-loader] Loading development URL:", url);
+	// Packaged builds must always use local bundled files.
+	// This avoids accidental black screens when NODE_ENV is unset/mis-set.
+	if (isPackaged) {
+		console.log("[window-loader] Loading packaged file:", props.htmlFile);
+		props.browserWindow.loadFile(props.htmlFile, { hash: "/" });
+	} else if (rendererUrl) {
+		// Dev: prefer electron-vite injected URL (actual bound port, e.g. 5191 fallback).
+		const normalized = rendererUrl.endsWith("/")
+			? rendererUrl.slice(0, -1)
+			: rendererUrl;
+		const url = `${normalized}/#/`;
+		console.log("[window-loader] Loading dev server URL:", url);
 		props.browserWindow.loadURL(url);
 	} else {
-		// Production: load from file with hash routing
-		// TanStack Router uses hash-based routing, so we always start at #/
-		console.log("[window-loader] Loading file:", props.htmlFile);
-		props.browserWindow.loadFile(props.htmlFile, { hash: "/" });
+		// Dev fallback when ELECTRON_RENDERER_URL is missing.
+		const url = `http://localhost:${env.DESKTOP_VITE_PORT}/#/`;
+		console.log("[window-loader] Loading fallback development URL:", url);
+		props.browserWindow.loadURL(url);
 	}
 
 	// Log successful loads

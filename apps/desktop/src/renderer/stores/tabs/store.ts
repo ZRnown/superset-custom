@@ -112,7 +112,6 @@ function markAgentNotificationReadForPane(paneId: string): void {
 		.getState()
 		.markReadByDedupeKey(`agent-pane:${paneId}`);
 }
-
 export const useTabsStore = create<TabsStore>()(
 	devtools(
 		persist(
@@ -411,9 +410,6 @@ export const useTabsStore = create<TabsStore>()(
 						const resolved = acknowledgedStatus(newPanes[paneId]?.status);
 						if (resolved !== (newPanes[paneId]?.status ?? "idle")) {
 							newPanes[paneId] = { ...newPanes[paneId], status: resolved };
-							if (resolved === "idle") {
-								markAgentNotificationReadForPane(paneId);
-							}
 							hasChanges = true;
 						}
 					}
@@ -1011,6 +1007,7 @@ export const useTabsStore = create<TabsStore>()(
 						nextState.panes = {
 							...state.panes,
 							[paneId]: { ...pane, status: resolvedStatus },
+							[paneId]: { ...pane, status: resolvedStatus },
 						};
 					}
 					if (!focusUnchanged) {
@@ -1040,9 +1037,6 @@ export const useTabsStore = create<TabsStore>()(
 					const state = get();
 					const pane = state.panes[paneId];
 					if (!pane || pane.status === status) return;
-					if (pane.status === "review" && status === "idle") {
-						markAgentNotificationReadForPane(paneId);
-					}
 
 					set({
 						panes: {
@@ -1090,9 +1084,6 @@ export const useTabsStore = create<TabsStore>()(
 						const resolved = acknowledgedStatus(newPanes[paneId]?.status);
 						if (resolved !== (newPanes[paneId]?.status ?? "idle")) {
 							newPanes[paneId] = { ...newPanes[paneId], status: resolved };
-							if (resolved === "idle") {
-								markAgentNotificationReadForPane(paneId);
-							}
 							hasChanges = true;
 						}
 					}
@@ -1123,7 +1114,6 @@ export const useTabsStore = create<TabsStore>()(
 							newPanes[paneId].status !== "idle"
 						) {
 							newPanes[paneId] = { ...newPanes[paneId], status: "idle" };
-							markAgentNotificationReadForPane(paneId);
 							hasChanges = true;
 						}
 					}

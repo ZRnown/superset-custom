@@ -4,7 +4,6 @@ import { useOnlineStatus } from "renderer/hooks/useOnlineStatus";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { SettingsButton } from "renderer/screens/main/components/SettingsButton";
 import { NavigationControls } from "./components/NavigationControls";
-import { NotificationsCenter } from "./components/NotificationsCenter";
 import { OpenInMenuButton } from "./components/OpenInMenuButton";
 import { ResourceConsumption } from "./components/ResourceConsumption";
 import { SidebarToggle } from "./components/SidebarToggle";
@@ -60,7 +59,6 @@ export function TopBar() {
 				)}
 				<SettingsButton />
 				{!isMac && <WindowControls />}
-				<NotificationsCenter />
 			</div>
 		</div>
 	);

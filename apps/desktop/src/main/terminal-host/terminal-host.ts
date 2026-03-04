@@ -156,7 +156,9 @@ export class TerminalHost {
 		const usedWarmAttachFastPath = !isNew;
 		const attachStartedAt = Date.now();
 		const snapshot = await session.attach(socket, {
-			includeSnapshot: isNew,
+			// Preserve visible terminal history across tab switches.
+			// We still cap snapshot size in Session (ATTACH_SNAPSHOT_SCROLLBACK_LINES).
+			includeSnapshot: true,
 		});
 		const attachDurationMs = Date.now() - attachStartedAt;
 		if (DEBUG_TERMINAL) {

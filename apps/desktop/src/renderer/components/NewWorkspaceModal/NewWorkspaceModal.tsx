@@ -563,8 +563,7 @@ export function NewWorkspaceModal() {
 				toast.error("Select an agent first");
 				return;
 			}
-			const shouldMoveLaunchTabToLeft =
-				selectedAgent === "codex" && codexLaunchMode !== "new";
+			const shouldMoveLaunchTabToLeft = true;
 
 			setIsOpeningSessionWorkspace(true);
 			try {

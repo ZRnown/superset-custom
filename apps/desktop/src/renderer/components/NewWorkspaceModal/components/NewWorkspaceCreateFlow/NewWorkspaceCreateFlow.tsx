@@ -165,9 +165,10 @@ export function NewWorkspaceCreateFlow({
 				<Button
 					type="button"
 					variant={workspaceCreateMode === "worktree" ? "default" : "outline"}
-					className="h-8 text-xs justify-start"
+					className="h-8 text-xs justify-start gap-1.5"
 					onClick={() => onWorkspaceCreateModeChange("worktree")}
 				>
+					<GoGitBranch className="size-3.5 shrink-0" />
 					New worktree agent
 				</Button>
 			</div>

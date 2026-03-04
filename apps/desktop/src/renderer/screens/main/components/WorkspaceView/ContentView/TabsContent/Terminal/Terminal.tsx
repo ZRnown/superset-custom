@@ -357,6 +357,16 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 		unregisterPasteCallbackRef,
 	});
 
+	// Ensure terminal input caret is restored when this pane becomes focused via sidebar/pane switching.
+	useEffect(() => {
+		if (!isFocused || document.hidden) return;
+		const frame = requestAnimationFrame(() => {
+			if (!isFocusedRef.current) return;
+			xtermRef.current?.focus();
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [isFocused, isFocusedRef]);
+
 	useEffect(() => {
 		const xterm = xtermRef.current;
 		if (!xterm || !terminalTheme) return;

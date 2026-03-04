@@ -316,7 +316,14 @@ export function NewWorkspaceModal() {
 		setBranchSearch("");
 		setShowAdvanced(false);
 		setRunSetupScript(true);
+		setCodexLaunchMode("new");
 		setSelectedCodexSessionId("");
+		if (typeof window !== "undefined") {
+			window.localStorage.setItem(
+				WORKSPACE_CODEX_LAUNCH_MODE_STORAGE_KEY,
+				"new",
+			);
+		}
 	};
 
 	useEffect(() => {
@@ -553,6 +560,32 @@ export function NewWorkspaceModal() {
 		return created.workspace.id;
 	};
 
+	const syncLaunchResultToWorkspaceView = async (
+		workspaceId: string,
+		launchResult: { tabId?: string | null; paneId?: string | null },
+		{ moveToLeft }: { moveToLeft: boolean },
+	) => {
+		if (!launchResult.tabId) return;
+		const { useTabsStore } = await import("renderer/stores/tabs/store");
+		const tabsStore = useTabsStore.getState();
+
+		if (moveToLeft) {
+			tabsStore.reorderTabById(launchResult.tabId, 0);
+		}
+
+		tabsStore.setActiveTab(workspaceId, launchResult.tabId);
+
+		if (launchResult.paneId && tabsStore.panes[launchResult.paneId]) {
+			tabsStore.setFocusedPane(launchResult.tabId, launchResult.paneId);
+		}
+
+		const search = launchResult.paneId
+			? { tabId: launchResult.tabId, paneId: launchResult.paneId }
+			: { tabId: launchResult.tabId };
+
+		await navigateToWorkspace(workspaceId, navigate, { replace: true, search });
+	};
+
 	const handleCreateWorkspace = async () => {
 		if (!selectedProjectId) return;
 		// Keep the agent prompt uncapped; only trim surrounding whitespace.
@@ -603,10 +636,9 @@ export function NewWorkspaceModal() {
 						return;
 					}
 
-					if (shouldMoveLaunchTabToLeft && launchResult.tabId) {
-						const { useTabsStore } = await import("renderer/stores/tabs/store");
-						useTabsStore.getState().reorderTabById(launchResult.tabId, 0);
-					}
+					await syncLaunchResultToWorkspaceView(workspaceId, launchResult, {
+						moveToLeft: shouldMoveLaunchTabToLeft,
+					});
 				}
 
 				toast.success("Opened agent workspace");
@@ -674,6 +706,12 @@ export function NewWorkspaceModal() {
 					toast.error("Failed to start agent", {
 						description: launchResult.error ?? "Failed to start agent session.",
 					});
+				} else {
+					await syncLaunchResultToWorkspaceView(
+						result.workspace.id,
+						launchResult,
+						{ moveToLeft: false },
+					);
 				}
 			}
 

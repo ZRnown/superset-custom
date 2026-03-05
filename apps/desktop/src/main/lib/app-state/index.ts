@@ -30,6 +30,14 @@ function ensureValidShape(data: Partial<AppState>): AppState {
 				...(data.hotkeysState?.byPlatform ?? {}),
 			},
 		},
+		sshState: {
+			...defaultAppState.sshState,
+			...(data.sshState ?? {}),
+			credentialsByAlias: {
+				...defaultAppState.sshState.credentialsByAlias,
+				...(data.sshState?.credentialsByAlias ?? {}),
+			},
+		},
 	};
 }
 

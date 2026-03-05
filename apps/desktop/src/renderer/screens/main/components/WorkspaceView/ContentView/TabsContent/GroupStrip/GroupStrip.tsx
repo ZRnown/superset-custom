@@ -1,5 +1,6 @@
 import type { TerminalPreset } from "@superset/local-db";
 import { FEATURE_FLAGS } from "@superset/shared/constants";
+import { toast } from "@superset/ui/sonner";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate, useParams } from "@tanstack/react-router";
@@ -12,7 +13,9 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { useCreateOrAttachWithTheme } from "renderer/hooks/useCreateOrAttachWithTheme";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { launchCommandInPane } from "renderer/lib/terminal/launch-command";
 import { usePresets } from "renderer/react-query/presets";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useTabsStore } from "renderer/stores/tabs/store";
@@ -49,6 +52,9 @@ export function GroupStrip() {
 	const reorderTabs = useTabsStore((s) => s.reorderTabs);
 
 	const setTabAutoTitles = useTabsStore((s) => s.setTabAutoTitles);
+	const createOrAttach = useCreateOrAttachWithTheme();
+	const terminalWrite = electronTrpc.terminal.write.useMutation();
+	const sshLaunchCommand = electronTrpc.ssh.getLaunchCommand.useMutation();
 	const { presets } = usePresets();
 	const navigate = useNavigate();
 
@@ -183,7 +189,12 @@ export function GroupStrip() {
 		if (updates.length > 0) {
 			setTabAutoTitles(updates);
 		}
-	}, [chatSessions, chatPaneSessionMap, setTabAutoTitles, shouldSyncChatTitles]);
+	}, [
+		chatSessions,
+		chatPaneSessionMap,
+		setTabAutoTitles,
+		shouldSyncChatTitles,
+	]);
 
 	const handleAddGroup = () => {
 		if (!activeWorkspaceId) return;
@@ -199,6 +210,47 @@ export function GroupStrip() {
 		if (!activeWorkspaceId) return;
 		addBrowserTab(activeWorkspaceId);
 	};
+
+	const handleOpenSshHost = useCallback(
+		(alias: string) => {
+			if (!activeWorkspaceId) return;
+			const nextAlias = alias.trim();
+			if (!nextAlias) return;
+
+			const { tabId, paneId } = addTab(activeWorkspaceId, {});
+			renameTab(tabId, `SSH · ${nextAlias}`);
+			setActiveTab(activeWorkspaceId, tabId);
+
+			void sshLaunchCommand
+				.mutateAsync({ alias: nextAlias })
+				.then(({ launchCommand }) =>
+					launchCommandInPane({
+						paneId,
+						tabId,
+						workspaceId: activeWorkspaceId,
+						command: launchCommand,
+						createOrAttach: (input) => createOrAttach.mutateAsync(input),
+						write: (input) => terminalWrite.mutateAsync(input),
+					}),
+				)
+				.catch((error) => {
+					console.error("[ssh-hub] Failed to open SSH host", {
+						alias: nextAlias,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					toast.error(`Failed to connect to ${nextAlias}`);
+				});
+		},
+		[
+			activeWorkspaceId,
+			addTab,
+			createOrAttach,
+			renameTab,
+			setActiveTab,
+			sshLaunchCommand,
+			terminalWrite,
+		],
+	);
 
 	const handleOpenPreset = useCallback(
 		(preset: TerminalPreset) => {
@@ -299,6 +351,7 @@ export function GroupStrip() {
 			onDropToNewTab={movePaneToNewTab}
 			isLastPaneInTab={checkIsLastPaneInTab}
 			onAddTerminal={handleAddGroup}
+			onOpenSshHost={handleOpenSshHost}
 			onAddChat={handleAddChat}
 			onAddBrowser={handleAddBrowser}
 			onOpenPreset={handleOpenPreset}
@@ -350,7 +403,7 @@ export function GroupStrip() {
 							className={`h-full shrink-0 ${
 								!useCompactAddButton
 									? hasAiChat
-										? "w-[220px]"
+										? "w-[260px]"
 										: "w-[170px]"
 									: "w-10"
 							}`}

@@ -15,6 +15,7 @@ import {
 	getRegisteredWorktree,
 	gitSwitchBranch,
 } from "./security";
+import { clearStatusCacheForWorktree } from "./utils/status-cache";
 
 export const createBranchesRouter = () => {
 	return router({
@@ -29,6 +30,7 @@ export const createBranchesRouter = () => {
 					defaultBranch: string;
 					checkedOutBranches: Record<string, string>;
 					worktreeBaseBranch: string | null;
+					currentBranch: string | null;
 				}> => {
 					assertRegisteredWorktree(input.worktreePath);
 
@@ -82,6 +84,7 @@ export const createBranchesRouter = () => {
 						defaultBranch,
 						checkedOutBranches,
 						worktreeBaseBranch: configuredBaseBranch ?? persistedBaseBranch,
+						currentBranch,
 					};
 				},
 			),
@@ -111,6 +114,7 @@ export const createBranchesRouter = () => {
 					.where(eq(worktrees.path, input.worktreePath))
 					.run();
 
+				clearStatusCacheForWorktree(input.worktreePath);
 				return { success: true };
 			}),
 
@@ -149,6 +153,7 @@ export const createBranchesRouter = () => {
 					.where(eq(worktrees.path, input.worktreePath))
 					.run();
 
+				clearStatusCacheForWorktree(input.worktreePath);
 				return { success: true };
 			}),
 	});

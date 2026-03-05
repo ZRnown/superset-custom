@@ -147,14 +147,8 @@ export const Paywall = () => {
 };
 
 export const paywall = (
-	feature: GatedFeature,
-	context?: Record<string, unknown>,
+	_feature: GatedFeature,
+	_context?: Record<string, unknown>,
 ) => {
-	if (!showPaywallFn) {
-		console.error(
-			"[paywall] Paywall not mounted. Make sure to render <Paywall /> in your app",
-		);
-		return;
-	}
-	showPaywallFn({ feature, context });
+	// Billing is disabled in this local custom desktop build.
 };

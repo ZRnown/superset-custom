@@ -105,6 +105,7 @@ function calculateDiffStats(lines: DiffLine[]): {
 }
 
 const EXPANDED_MAX_HEIGHT = 200;
+const MAX_INITIAL_DIFF_LINES = 400;
 
 export const FileDiffTool = ({
 	filePath,
@@ -122,6 +123,7 @@ export const FileDiffTool = ({
 	const hasExpandedRenderer = Boolean(renderExpandedContent);
 	const [expanded, setExpanded] = useState(hasExpandedRenderer);
 	const [hasAutoExpanded, setHasAutoExpanded] = useState(false);
+	const [showAllDiffLines, setShowAllDiffLines] = useState(false);
 
 	useEffect(() => {
 		if (!hasAutoExpanded && hasExpandedRenderer) {
@@ -129,6 +131,10 @@ export const FileDiffTool = ({
 			setHasAutoExpanded(true);
 		}
 	}, [hasAutoExpanded, hasExpandedRenderer]);
+
+	useEffect(() => {
+		setShowAllDiffLines(false);
+	}, [structuredPatch, oldString, newString, content, isWriteMode]);
 
 	const isStreaming = state === "input-streaming";
 
@@ -152,6 +158,11 @@ export const FileDiffTool = ({
 
 	const stats = useMemo(() => calculateDiffStats(diffLines), [diffLines]);
 	const hasDiff = diffLines.length > 0;
+	const isLargeDiff = diffLines.length > MAX_INITIAL_DIFF_LINES;
+	const visibleDiffLines =
+		!expanded || showAllDiffLines || !isLargeDiff
+			? diffLines
+			: diffLines.slice(0, MAX_INITIAL_DIFF_LINES);
 	const canOpenFile = Boolean(filePath && onFilePathClick);
 	const canOpenDiffPane = Boolean(filePath && onDiffPathClick);
 	const hasOpenMenu = canOpenFile && canOpenDiffPane;
@@ -280,7 +291,7 @@ export const FileDiffTool = ({
 						renderExpandedContent(expandedContentProps)
 					) : (
 						<div className="font-mono text-xs">
-							{diffLines.map((line, i) => (
+							{visibleDiffLines.map((line, i) => (
 								<div
 									className={cn(
 										"flex border-l-2 px-2.5 py-0.5",
@@ -305,6 +316,21 @@ export const FileDiffTool = ({
 									</pre>
 								</div>
 							))}
+							{isLargeDiff && !showAllDiffLines && (
+								<div className="border-l-2 border-l-transparent px-2.5 py-1.5">
+									<button
+										type="button"
+										className="text-muted-foreground text-xs underline underline-offset-2 transition-colors hover:text-foreground"
+										onClick={(event) => {
+											event.stopPropagation();
+											setShowAllDiffLines(true);
+										}}
+									>
+										Show remaining {diffLines.length - visibleDiffLines.length}{" "}
+										lines
+									</button>
+								</div>
+							)}
 						</div>
 					)}
 				</div>

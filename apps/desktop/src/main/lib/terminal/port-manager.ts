@@ -10,6 +10,8 @@ import type { TerminalSession } from "./types";
 
 // How often to poll for port changes (in ms)
 const SCAN_INTERVAL_MS = 2500;
+const PID_TREE_SCAN_CONCURRENCY = 6;
+const MIN_HINT_SCAN_INTERVAL_MS = 1200;
 
 // Delay before scanning after a port hint is detected (in ms)
 const HINT_SCAN_DELAY_MS = 500;
@@ -58,12 +60,14 @@ interface ScanState {
 
 class PortManager extends EventEmitter {
 	private ports = new Map<string, DetectedPort>();
+	private panePortKeys = new Map<string, Set<string>>();
 	private sessions = new Map<string, RegisteredSession>();
 	/** Daemon-mode sessions: paneId → { workspaceId, pid } */
 	private daemonSessions = new Map<string, DaemonSession>();
 	private scanInterval: ReturnType<typeof setInterval> | null = null;
 	private pendingHintScans = new Map<string, ReturnType<typeof setTimeout>>();
 	private isScanning = false;
+	private lastScanAt = 0;
 
 	constructor() {
 		super();
@@ -151,6 +155,10 @@ class PortManager extends EventEmitter {
 
 		const timeout = setTimeout(() => {
 			this.pendingHintScans.delete(paneId);
+			if (this.isScanning || Date.now() - this.lastScanAt < MIN_HINT_SCAN_INTERVAL_MS) {
+				return;
+			}
+			this.lastScanAt = Date.now();
 			this.scanPane(paneId).catch(() => {});
 		}, HINT_SCAN_DELAY_MS);
 		// Don't keep Electron alive just for port scanning
@@ -221,35 +229,48 @@ class PortManager extends EventEmitter {
 	}
 
 	private async collectRegularSessionPids(scanState: ScanState): Promise<void> {
-		const tasks: Promise<void>[] = [];
+		const targets: Array<{ paneId: string; workspaceId: string; pid: number }> =
+			[];
 		for (const [paneId, { session, workspaceId }] of this.sessions) {
 			if (!session.isAlive) continue;
-			tasks.push(
-				this.collectPidTree({
-					paneId,
-					workspaceId,
-					pid: session.pty.pid,
-					scanState,
-				}),
-			);
+			targets.push({ paneId, workspaceId, pid: session.pty.pid });
 		}
-		await Promise.all(tasks);
+		await this.collectPidTrees(targets, scanState);
 	}
 
 	private async collectDaemonSessionPids(scanState: ScanState): Promise<void> {
-		const tasks: Promise<void>[] = [];
+		const targets: Array<{ paneId: string; workspaceId: string; pid: number }> =
+			[];
 		for (const [paneId, { workspaceId, pid }] of this.daemonSessions) {
 			if (pid === null) continue;
-			tasks.push(
-				this.collectPidTree({
-					paneId,
-					workspaceId,
-					pid,
-					scanState,
-				}),
-			);
+			targets.push({ paneId, workspaceId, pid });
 		}
-		await Promise.all(tasks);
+		await this.collectPidTrees(targets, scanState);
+	}
+
+	private async collectPidTrees(
+		targets: Array<{ paneId: string; workspaceId: string; pid: number }>,
+		scanState: ScanState,
+	): Promise<void> {
+		if (targets.length === 0) return;
+
+		let nextIndex = 0;
+		const workerCount = Math.min(PID_TREE_SCAN_CONCURRENCY, targets.length);
+		const workers = Array.from({ length: workerCount }, async () => {
+			while (nextIndex < targets.length) {
+				const target = targets[nextIndex];
+				nextIndex += 1;
+				if (!target) break;
+				await this.collectPidTree({
+					paneId: target.paneId,
+					workspaceId: target.workspaceId,
+					pid: target.pid,
+					scanState,
+				});
+			}
+		});
+
+		await Promise.all(workers);
 	}
 
 	private async collectPidTree({
@@ -347,6 +368,13 @@ class PortManager extends EventEmitter {
 				this.sessions.has(port.paneId) || this.daemonSessions.has(port.paneId);
 			if (!isRegistered) {
 				this.ports.delete(key);
+				const paneKeys = this.panePortKeys.get(port.paneId);
+				if (paneKeys) {
+					paneKeys.delete(key);
+					if (paneKeys.size === 0) {
+						this.panePortKeys.delete(port.paneId);
+					}
+				}
 				this.emit("port:remove", port);
 			}
 		}
@@ -373,6 +401,7 @@ class PortManager extends EventEmitter {
 			this.clearEmptyTreePanes(scanState.emptyTreePanes);
 			this.cleanupUnregisteredPorts();
 		} finally {
+			this.lastScanAt = Date.now();
 			this.isScanning = false;
 		}
 	}
@@ -393,6 +422,7 @@ class PortManager extends EventEmitter {
 		);
 
 		const seenKeys = new Set<string>();
+		const existingKeys = this.panePortKeys.get(paneId) ?? new Set<string>();
 
 		for (const info of validPortInfos) {
 			const key = this.makeKey(paneId, info.port);
@@ -427,11 +457,18 @@ class PortManager extends EventEmitter {
 			}
 		}
 
-		for (const [key, port] of this.ports) {
-			if (port.paneId === paneId && !seenKeys.has(key)) {
-				this.ports.delete(key);
-				this.emit("port:remove", port);
-			}
+		for (const key of existingKeys) {
+			if (seenKeys.has(key)) continue;
+			const existingPort = this.ports.get(key);
+			if (!existingPort) continue;
+			this.ports.delete(key);
+			this.emit("port:remove", existingPort);
+		}
+
+		if (seenKeys.size > 0) {
+			this.panePortKeys.set(paneId, seenKeys);
+		} else {
+			this.panePortKeys.delete(paneId);
 		}
 	}
 
@@ -440,16 +477,21 @@ class PortManager extends EventEmitter {
 	}
 
 	removePortsForPane(paneId: string): void {
-		const portsToRemove: DetectedPort[] = [];
-
-		for (const [key, port] of this.ports) {
-			if (port.paneId === paneId) {
-				portsToRemove.push(port);
+		const paneKeys = this.panePortKeys.get(paneId);
+		if (paneKeys) {
+			for (const key of paneKeys) {
+				const port = this.ports.get(key);
+				if (!port) continue;
 				this.ports.delete(key);
+				this.emit("port:remove", port);
 			}
+			this.panePortKeys.delete(paneId);
+			return;
 		}
 
-		for (const port of portsToRemove) {
+		for (const [key, port] of this.ports) {
+			if (port.paneId !== paneId) continue;
+			this.ports.delete(key);
 			this.emit("port:remove", port);
 		}
 	}

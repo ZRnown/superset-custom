@@ -2,6 +2,7 @@ import { useCallback, useRef } from "react";
 import type { ElectronRouterOutputs } from "renderer/lib/electron-trpc";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useGitInitDialogStore } from "renderer/stores/git-init-dialog";
+import { autoImportWorktreesForProjects } from "./auto-import-worktrees";
 import { processOpenNewResults } from "./processOpenNewResults";
 import { useOpenFromPath } from "./useOpenFromPath";
 import { useOpenNew } from "./useOpenNew";
@@ -18,9 +19,32 @@ export function useOpenProject() {
 	const openNewMutation = useOpenNew();
 	const openFromPathMutation = useOpenFromPath();
 	const initGitAndOpen = electronTrpc.projects.initGitAndOpen.useMutation();
+	const importAllWorktrees =
+		electronTrpc.workspaces.importAllWorktrees.useMutation();
 	const utils = electronTrpc.useUtils();
 
 	const pendingRef = useRef<PendingGitInit | null>(null);
+
+	const autoImportProjectWorktrees = useCallback(
+		async (projectIds: string[]) => {
+			const importedCount = await autoImportWorktreesForProjects({
+				projectIds,
+				importAllWorktrees: (input) => importAllWorktrees.mutateAsync(input),
+				onError: ({ projectId, error }) => {
+					console.warn(
+						"[useOpenProject] Failed to auto-import worktrees:",
+						projectId,
+						error,
+					);
+				},
+			});
+
+			if (importedCount > 0) {
+				await utils.workspaces.invalidate();
+			}
+		},
+		[importAllWorktrees, utils],
+	);
 
 	const showDialog = useCallback(
 		(pending: PendingGitInit) => {
@@ -50,6 +74,10 @@ export function useOpenProject() {
 							}
 						}
 
+						await autoImportProjectWorktrees(
+							projects.map((project) => project.id),
+						);
+
 						await utils.projects.getRecents.invalidate();
 					} finally {
 						useGitInitDialogStore.getState().close();
@@ -61,13 +89,21 @@ export function useOpenProject() {
 					const p = pendingRef.current;
 					if (!p) return;
 
-					useGitInitDialogStore.getState().close();
-					pendingRef.current = null;
-					p.resolve(p.immediateSuccesses);
+					void (async () => {
+						try {
+							await autoImportProjectWorktrees(
+								p.immediateSuccesses.map((project) => project.id),
+							);
+						} finally {
+							useGitInitDialogStore.getState().close();
+							pendingRef.current = null;
+							p.resolve(p.immediateSuccesses);
+						}
+					})();
 				},
 			});
 		},
-		[initGitAndOpen, utils],
+		[autoImportProjectWorktrees, initGitAndOpen, utils],
 	);
 
 	const openNew = useCallback((): Promise<Project[]> => {
@@ -100,7 +136,12 @@ export function useOpenProject() {
 							return;
 						}
 
-						resolve(immediateProjects);
+						void (async () => {
+							await autoImportProjectWorktrees(
+								immediateProjects.map((project) => project.id),
+							);
+							resolve(immediateProjects);
+						})();
 						return;
 					}
 
@@ -111,7 +152,7 @@ export function useOpenProject() {
 				},
 			});
 		});
-	}, [openNewMutation, showDialog]);
+	}, [autoImportProjectWorktrees, openNewMutation, showDialog]);
 
 	const openFromPath = useCallback(
 		(path: string): Promise<Project | null> => {
@@ -140,7 +181,10 @@ export function useOpenProject() {
 							}
 
 							if ("project" in result) {
-								resolve(result.project);
+								void (async () => {
+									await autoImportProjectWorktrees([result.project.id]);
+									resolve(result.project);
+								})();
 								return;
 							}
 
@@ -153,7 +197,7 @@ export function useOpenProject() {
 				);
 			});
 		},
-		[openFromPathMutation, showDialog],
+		[autoImportProjectWorktrees, openFromPathMutation, showDialog],
 	);
 
 	return {

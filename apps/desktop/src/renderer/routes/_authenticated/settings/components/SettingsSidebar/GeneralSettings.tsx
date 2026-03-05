@@ -2,16 +2,13 @@ import { cn } from "@superset/ui/utils";
 import { Link, useMatchRoute } from "@tanstack/react-router";
 import {
 	HiOutlineBell,
-	HiOutlineBuildingOffice2,
 	HiOutlineCommandLine,
-	HiOutlineCreditCard,
 	HiOutlineDevicePhoneMobile,
 	HiOutlineKey,
 	HiOutlinePaintBrush,
 	HiOutlinePuzzlePiece,
 	HiOutlineShieldCheck,
 	HiOutlineSparkles,
-	HiOutlineUser,
 } from "react-icons/hi2";
 import { LuKeyboard } from "react-icons/lu";
 import { electronTrpc } from "renderer/lib/electron-trpc";
@@ -22,15 +19,12 @@ interface GeneralSettingsProps {
 }
 
 type SettingsRoute =
-	| "/settings/account"
-	| "/settings/organization"
 	| "/settings/appearance"
 	| "/settings/ringtones"
 	| "/settings/keyboard"
 	| "/settings/behavior"
 	| "/settings/terminal"
 	| "/settings/integrations"
-	| "/settings/billing"
 	| "/settings/devices"
 	| "/settings/api-keys"
 	| "/settings/permissions";
@@ -42,18 +36,6 @@ const GENERAL_SECTIONS: {
 	icon: React.ReactNode;
 	macOnly?: boolean;
 }[] = [
-	{
-		id: "/settings/account",
-		section: "account",
-		label: "Account",
-		icon: <HiOutlineUser className="h-4 w-4" />,
-	},
-	{
-		id: "/settings/organization",
-		section: "organization",
-		label: "Organization",
-		icon: <HiOutlineBuildingOffice2 className="h-4 w-4" />,
-	},
 	{
 		id: "/settings/appearance",
 		section: "appearance",
@@ -89,12 +71,6 @@ const GENERAL_SECTIONS: {
 		section: "integrations",
 		label: "Integrations",
 		icon: <HiOutlinePuzzlePiece className="h-4 w-4" />,
-	},
-	{
-		id: "/settings/billing",
-		section: "billing",
-		label: "Billing",
-		icon: <HiOutlineCreditCard className="h-4 w-4" />,
 	},
 	{
 		id: "/settings/devices",

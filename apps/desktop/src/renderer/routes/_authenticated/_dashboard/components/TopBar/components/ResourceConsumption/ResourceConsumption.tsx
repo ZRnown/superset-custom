@@ -8,6 +8,7 @@ import {
 	HiOutlineCpuChip,
 } from "react-icons/hi2";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { navigateToWorkspace as navigateToWorkspaceRoute } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { useTabsStore } from "renderer/stores/tabs/store";
 
 function formatMemory(bytes: number): string {
@@ -55,7 +56,7 @@ export function ResourceConsumption() {
 	};
 
 	const navigateToWorkspace = (workspaceId: string) => {
-		navigate({ to: `/workspace/${workspaceId}` });
+		void navigateToWorkspaceRoute(workspaceId, navigate);
 		setOpen(false);
 	};
 
@@ -65,7 +66,7 @@ export function ResourceConsumption() {
 			setActiveTab(workspaceId, pane.tabId);
 			setFocusedPane(pane.tabId, paneId);
 		}
-		navigate({ to: `/workspace/${workspaceId}` });
+		void navigateToWorkspaceRoute(workspaceId, navigate);
 		setOpen(false);
 	};
 
@@ -169,6 +170,24 @@ export function ResourceConsumption() {
 									</span>
 								</div>
 							</div>
+							{(snapshot.app.other.cpu > 0 ||
+								snapshot.app.other.memory > 0) && (
+								<div className="px-3 py-1.5 pl-6 flex items-center justify-between bg-muted/30">
+									<span className="text-[11px] text-muted-foreground min-w-0 truncate">
+										Other
+									</span>
+									<div
+										className={`${METRIC_COLS} text-[11px] text-muted-foreground`}
+									>
+										<span className={CPU_COL}>
+											{formatCpu(snapshot.app.other.cpu)}
+										</span>
+										<span className={MEM_COL}>
+											{formatMemory(snapshot.app.other.memory)}
+										</span>
+									</div>
+								</div>
+							)}
 						</div>
 					)}
 

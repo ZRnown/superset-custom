@@ -9,6 +9,8 @@ import { useTabsStore } from "renderer/stores/tabs/store";
 const webviewRegistry = new Map<string, Electron.WebviewTag>();
 /** Tracks paneId → last-registered webContentsId so we can re-register if it changes. */
 const registeredWebContentsIds = new Map<string, number>();
+const parkedAt = new Map<string, number>();
+const MAX_PARKED_WEBVIEWS = 3;
 let hiddenContainer: HTMLDivElement | null = null;
 
 function getHiddenContainer(): HTMLDivElement {
@@ -33,7 +35,25 @@ export function destroyPersistentWebview(paneId: string): void {
 		webview.remove();
 		webviewRegistry.delete(paneId);
 	}
+	parkedAt.delete(paneId);
 	registeredWebContentsIds.delete(paneId);
+}
+
+function markWebviewActive(paneId: string): void {
+	parkedAt.delete(paneId);
+}
+
+function evictExcessParkedWebviews(onEvict: (paneId: string) => void): void {
+	if (parkedAt.size <= MAX_PARKED_WEBVIEWS) return;
+
+	const overflow = parkedAt.size - MAX_PARKED_WEBVIEWS;
+	const oldestParked = [...parkedAt.entries()]
+		.sort((a, b) => a[1] - b[1])
+		.slice(0, overflow);
+
+	for (const [evictPaneId] of oldestParked) {
+		onEvict(evictPaneId);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +100,8 @@ export function usePersistentWebview({
 
 	const { mutate: registerBrowser } =
 		electronTrpc.browser.register.useMutation();
+	const { mutate: unregisterBrowser } =
+		electronTrpc.browser.unregister.useMutation();
 	const { mutate: upsertHistory } =
 		electronTrpc.browserHistory.upsert.useMutation();
 
@@ -134,6 +156,7 @@ export function usePersistentWebview({
 		if (webview) {
 			// Reclaim from hidden container
 			container.appendChild(webview);
+			markWebviewActive(paneId);
 			syncStoreFromWebview(webview);
 		} else {
 			// Create new webview
@@ -148,6 +171,7 @@ export function usePersistentWebview({
 
 			webviewRegistry.set(paneId, webview);
 			container.appendChild(webview);
+			markWebviewActive(paneId);
 
 			const finalUrl = sanitizeUrl(initialUrlRef.current);
 			webview.src = finalUrl;
@@ -321,9 +345,21 @@ export function usePersistentWebview({
 			);
 
 			getHiddenContainer().appendChild(wv);
+			parkedAt.set(paneId, Date.now());
+			evictExcessParkedWebviews((evictPaneId) => {
+				if (evictPaneId === paneId) return;
+				destroyPersistentWebview(evictPaneId);
+				unregisterBrowser({ paneId: evictPaneId });
+			});
 		};
 		// paneId is stable for the lifetime of a pane; initialUrlRef only used on first create.
-	}, [paneId, registerBrowser, syncStoreFromWebview, upsertHistory]);
+	}, [
+		paneId,
+		registerBrowser,
+		syncStoreFromWebview,
+		unregisterBrowser,
+		upsertHistory,
+	]);
 
 	// -- Navigation methods (operate directly on the webview) ---------------
 

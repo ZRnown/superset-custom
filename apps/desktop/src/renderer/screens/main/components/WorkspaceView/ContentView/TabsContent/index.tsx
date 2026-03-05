@@ -11,7 +11,7 @@ export function TabsContent() {
 	const activeTabIds = useTabsStore((s) => s.activeTabIds);
 	const tabHistoryStacks = useTabsStore((s) => s.tabHistoryStacks);
 
-	const activeTabId = useMemo(() => {
+	const tabToRender = useMemo(() => {
 		if (!activeWorkspaceId) return null;
 
 		const resolvedActiveTabId = resolveActiveTabIdForWorkspace({
@@ -20,17 +20,14 @@ export function TabsContent() {
 			activeTabIds,
 			tabHistoryStacks,
 		});
-		if (!resolvedActiveTabId) return null;
+		if (!resolvedActiveTabId) {
+			return null;
+		}
 
 		const tab = allTabs.find((t) => t.id === resolvedActiveTabId) || null;
 		if (!tab || tab.workspaceId !== activeWorkspaceId) return null;
-		return resolvedActiveTabId;
+		return tab;
 	}, [activeWorkspaceId, activeTabIds, allTabs, tabHistoryStacks]);
-
-	const tabToRender = useMemo(() => {
-		if (!activeTabId) return null;
-		return allTabs.find((tab) => tab.id === activeTabId) || null;
-	}, [activeTabId, allTabs]);
 
 	return (
 		<div className="flex-1 min-h-0 flex overflow-hidden">

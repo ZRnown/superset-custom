@@ -2,10 +2,9 @@ import { useParams } from "@tanstack/react-router";
 import { HiOutlineWifi } from "react-icons/hi2";
 import { useOnlineStatus } from "renderer/hooks/useOnlineStatus";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { SettingsButton } from "renderer/screens/main/components/SettingsButton";
 import { NavigationControls } from "./components/NavigationControls";
-import { NotificationsCenter } from "./components/NotificationsCenter";
 import { OpenInMenuButton } from "./components/OpenInMenuButton";
-import { OrganizationDropdown } from "./components/OrganizationDropdown";
 import { ResourceConsumption } from "./components/ResourceConsumption";
 import { SidebarToggle } from "./components/SidebarToggle";
 import { WindowControls } from "./components/WindowControls";
@@ -58,9 +57,8 @@ export function TopBar() {
 						projectId={workspace.project?.id}
 					/>
 				)}
-				<OrganizationDropdown />
+				<SettingsButton />
 				{!isMac && <WindowControls />}
-				<NotificationsCenter />
 			</div>
 		</div>
 	);

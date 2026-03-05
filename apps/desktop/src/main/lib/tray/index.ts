@@ -56,6 +56,8 @@ function getTrayIconPath(): string | null {
 
 let tray: Tray | null = null;
 let pollIntervalId: ReturnType<typeof setInterval> | null = null;
+let lastTrayMenuSignature: string | null = null;
+const workspaceNameCache = new Map<string, string>();
 
 function createTrayIcon(): Electron.NativeImage | null {
 	const iconPath = getTrayIconPath();
@@ -128,17 +130,24 @@ async function killSession(paneId: string): Promise<void> {
 		console.error(`[Tray] Failed to kill session ${paneId}:`, error);
 	}
 
-	await updateTrayMenu();
+	await updateTrayMenu({ forceRefresh: true });
 }
 
 function getWorkspaceName(workspaceId: string): string {
+	const cached = workspaceNameCache.get(workspaceId);
+	if (cached) {
+		return cached;
+	}
+
 	try {
 		const workspace = localDb
 			.select({ name: workspaces.name })
 			.from(workspaces)
 			.where(eq(workspaces.id, workspaceId))
 			.get();
-		return workspace?.name || workspaceId.slice(0, 8);
+		const resolvedName = workspace?.name || workspaceId.slice(0, 8);
+		workspaceNameCache.set(workspaceId, resolvedName);
+		return resolvedName;
 	} catch {
 		return workspaceId.slice(0, 8);
 	}
@@ -240,10 +249,34 @@ async function quitApp(): Promise<void> {
 	app.quit();
 }
 
-async function updateTrayMenu(): Promise<void> {
+function getTrayMenuSignature(
+	sessions: ListSessionsResponse["sessions"],
+): string {
+	const signaturePayload = sessions
+		.map((session) => ({
+			sessionId: session.sessionId,
+			workspaceId: session.workspaceId,
+			paneId: session.paneId,
+			isAlive: session.isAlive,
+			attachedClients: session.attachedClients,
+			shell: session.shell,
+		}))
+		.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+	return JSON.stringify(signaturePayload);
+}
+
+async function updateTrayMenu({
+	forceRefresh = false,
+}: {
+	forceRefresh?: boolean;
+} = {}): Promise<void> {
 	if (!tray) return;
 
 	const { sessions } = await tryListExistingDaemonSessions();
+	const menuSignature = getTrayMenuSignature(sessions);
+	if (!forceRefresh && menuSignature === lastTrayMenuSignature) {
+		return;
+	}
 	const sessionCount = sessions.filter((s) => s.isAlive).length;
 
 	const sessionsSubmenu = buildSessionsSubmenu(sessions);
@@ -273,6 +306,7 @@ async function updateTrayMenu(): Promise<void> {
 	]);
 
 	tray.setContextMenu(menu);
+	lastTrayMenuSignature = menuSignature;
 }
 
 /** Call once after app.whenReady() */
@@ -325,4 +359,6 @@ export function disposeTray(): void {
 		tray.destroy();
 		tray = null;
 	}
+
+	lastTrayMenuSignature = null;
 }

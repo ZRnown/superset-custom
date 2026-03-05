@@ -60,6 +60,7 @@ function toErrorMessage(error: unknown): string | null {
 
 const AUTO_LAUNCH_MAX_RETRIES = 3;
 const AUTO_LAUNCH_RETRY_DELAY_MS = 1500;
+const CHAT_STREAM_FPS = 30;
 
 type MastraMessage = NonNullable<
 	UseMastraChatDisplayReturn["messages"]
@@ -139,6 +140,14 @@ export function ChatMastraInterface({
 	const autoLaunchAttemptsRef = useRef<Record<string, number>>({});
 	const autoLaunchSessionLockRef = useRef<Record<string, string | null>>({});
 	const messagesLengthRef = useRef(0);
+	const rawSnapshotFrameRef = useRef<number | null>(null);
+	const pendingRawSnapshotRef = useRef<{
+		sessionId: string | null;
+		isRunning: boolean;
+		currentMessage: UseMastraChatDisplayReturn["currentMessage"] | null;
+		messages: NonNullable<UseMastraChatDisplayReturn["messages"]>;
+		error: unknown;
+	} | null>(null);
 	const autoLaunchRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
 		null,
 	);
@@ -167,7 +176,7 @@ export function ChatMastraInterface({
 		sessionId,
 		cwd,
 		enabled: Boolean(sessionId),
-		fps: 60,
+		fps: CHAT_STREAM_FPS,
 	});
 	const {
 		commands,
@@ -354,30 +363,27 @@ export function ChatMastraInterface({
 		}
 	}, [cwd, refreshMcpOverview, resetMcpUi, sessionId]);
 
-	useEffect(() => {
-		if (!pendingImmediateUserMessage) return;
-		if (
-			hasMatchingUserMessage({
-				messages,
-				candidate: pendingImmediateUserMessage,
-			})
-		) {
-			setPendingImmediateUserMessage(null);
-		}
+	const pendingImmediateMessageMatched = useMemo(() => {
+		if (!pendingImmediateUserMessage) return false;
+		return hasMatchingUserMessage({
+			messages,
+			candidate: pendingImmediateUserMessage,
+		});
 	}, [messages, pendingImmediateUserMessage]);
 
 	const visibleMessages = useMemo(() => {
-		if (!pendingImmediateUserMessage) return messages;
-		if (
-			hasMatchingUserMessage({
-				messages,
-				candidate: pendingImmediateUserMessage,
-			})
-		) {
+		if (!pendingImmediateUserMessage || pendingImmediateMessageMatched) {
 			return messages;
 		}
 		return [...messages, pendingImmediateUserMessage];
-	}, [messages, pendingImmediateUserMessage]);
+	}, [messages, pendingImmediateMessageMatched, pendingImmediateUserMessage]);
+
+	useEffect(() => {
+		if (!pendingImmediateUserMessage) return;
+		if (pendingImmediateMessageMatched) {
+			setPendingImmediateUserMessage(null);
+		}
+	}, [pendingImmediateMessageMatched, pendingImmediateUserMessage]);
 
 	useEffect(() => {
 		if (isRunning) {
@@ -392,12 +398,20 @@ export function ChatMastraInterface({
 	}, [isRunning]);
 
 	useEffect(() => {
-		onRawSnapshotChange?.({
+		if (!onRawSnapshotChange) return;
+		pendingRawSnapshotRef.current = {
 			sessionId,
 			isRunning: canAbort,
 			currentMessage: currentMessage ?? null,
 			messages: messages ?? [],
 			error,
+		};
+		if (rawSnapshotFrameRef.current !== null) return;
+		rawSnapshotFrameRef.current = window.requestAnimationFrame(() => {
+			rawSnapshotFrameRef.current = null;
+			const snapshot = pendingRawSnapshotRef.current;
+			if (!snapshot) return;
+			onRawSnapshotChange(snapshot);
 		});
 	}, [
 		canAbort,
@@ -407,6 +421,15 @@ export function ChatMastraInterface({
 		onRawSnapshotChange,
 		sessionId,
 	]);
+
+	useEffect(() => {
+		return () => {
+			if (rawSnapshotFrameRef.current !== null) {
+				window.cancelAnimationFrame(rawSnapshotFrameRef.current);
+				rawSnapshotFrameRef.current = null;
+			}
+		};
+	}, []);
 
 	useEffect(() => {
 		messagesLengthRef.current = messages?.length ?? 0;

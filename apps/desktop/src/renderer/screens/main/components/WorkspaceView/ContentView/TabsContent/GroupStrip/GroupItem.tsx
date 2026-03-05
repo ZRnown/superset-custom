@@ -7,7 +7,7 @@ import {
 } from "@superset/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useDrag, useDrop } from "react-dnd";
 import { getEmptyImage } from "react-dnd-html5-backend";
 import { HiMiniXMark } from "react-icons/hi2";
@@ -25,14 +25,14 @@ interface GroupItemProps {
 	index: number;
 	isActive: boolean;
 	status: PaneStatus | null;
-	onSelect: () => void;
-	onClose: () => void;
-	onRename: (newName: string) => void;
-	onPaneDrop?: (paneId: string) => void;
+	onSelect: (tabId: string) => void;
+	onClose: (tabId: string) => void;
+	onRename: (tabId: string, newName: string) => void;
+	onPaneDrop?: (paneId: string, tabId: string) => void;
 	onReorder?: (fromIndex: number, toIndex: number) => void;
 }
 
-export function GroupItem({
+export const GroupItem = memo(function GroupItem({
 	tab,
 	index,
 	isActive,
@@ -114,7 +114,7 @@ export function GroupItem({
 					draggingSourceTabId &&
 					draggingSourceTabId !== tab.id
 				) {
-					onPaneDrop?.(draggingPaneId);
+					onPaneDrop?.(draggingPaneId, tab.id);
 				}
 				clearDragging();
 				return { handled: true };
@@ -128,9 +128,13 @@ export function GroupItem({
 	);
 
 	useEffect(() => {
-		if (isEditing && inputRef.current) {
-			inputRef.current.focus();
-			inputRef.current.select();
+		if (isEditing) {
+			// Use rAF to ensure focus happens after context menu closes
+			const id = requestAnimationFrame(() => {
+				inputRef.current?.focus();
+				inputRef.current?.select();
+			});
+			return () => cancelAnimationFrame(id);
 		}
 	}, [isEditing]);
 
@@ -142,7 +146,7 @@ export function GroupItem({
 	const handleSave = () => {
 		const trimmedValue = editValue.trim();
 		if (trimmedValue && trimmedValue !== displayName) {
-			onRename(trimmedValue);
+			onRename(tab.id, trimmedValue);
 		}
 		setIsEditing(false);
 	};
@@ -194,12 +198,12 @@ export function GroupItem({
 					) : (
 						<button
 							type="button"
-							onClick={onSelect}
+							onClick={() => onSelect(tab.id)}
 							onDoubleClick={startEditing}
 							onAuxClick={(e) => {
 								if (e.button === 1) {
 									e.preventDefault();
-									onClose();
+									onClose(tab.id);
 								}
 							}}
 							className={tabStyles}
@@ -222,7 +226,7 @@ export function GroupItem({
 										size="icon"
 										onClick={(e) => {
 											e.stopPropagation();
-											onClose();
+											onClose(tab.id);
 										}}
 										className="cursor-pointer size-6 hover:bg-muted"
 										aria-label="Close pane"
@@ -243,11 +247,11 @@ export function GroupItem({
 					<LuPencil className="size-4 mr-2" />
 					Rename
 				</ContextMenuItem>
-				<ContextMenuItem onSelect={onClose}>
+				<ContextMenuItem onSelect={() => onClose(tab.id)}>
 					<HiMiniXMark className="size-4 mr-2" />
 					Close
 				</ContextMenuItem>
 			</ContextMenuContent>
 		</ContextMenu>
 	);
-}
+});

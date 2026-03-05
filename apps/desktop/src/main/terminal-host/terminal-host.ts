@@ -32,6 +32,7 @@ import { createSession, type Session } from "./session";
 const KILL_TIMEOUT_MS = 5000;
 const MAX_CONCURRENT_SPAWNS = 3;
 const SPAWN_READY_TIMEOUT_MS = 5000;
+const DEBUG_TERMINAL = process.env.SUPERSET_TERMINAL_DEBUG === "1";
 
 function promiseWithTimeout<T>(
 	promise: Promise<T>,
@@ -152,7 +153,24 @@ export class TerminalHost {
 			}
 		}
 
-		const snapshot = await session.attach(socket);
+		const usedWarmAttachFastPath = !isNew;
+		const attachStartedAt = Date.now();
+		const snapshot = await session.attach(socket, {
+			// Preserve visible terminal history across tab switches.
+			// We still cap snapshot size in Session (ATTACH_SNAPSHOT_SCROLLBACK_LINES).
+			includeSnapshot: true,
+		});
+		const attachDurationMs = Date.now() - attachStartedAt;
+		if (DEBUG_TERMINAL) {
+			console.log("[TerminalHost] createOrAttach attach complete", {
+				sessionId,
+				isNew,
+				usedWarmAttachFastPath,
+				attachDurationMs,
+				snapshotBytes: Buffer.byteLength(snapshot.snapshotAnsi || "", "utf8"),
+				alternateScreen: snapshot.modes.alternateScreen,
+			});
+		}
 
 		return {
 			isNew,

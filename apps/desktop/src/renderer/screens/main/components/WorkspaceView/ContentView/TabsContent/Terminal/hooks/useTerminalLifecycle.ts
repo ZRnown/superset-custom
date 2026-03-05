@@ -391,6 +391,7 @@ export function useTerminalLifecycle({
 					if (DEBUG_TERMINAL) {
 						console.log(`[Terminal] createOrAttach start: ${paneId}`);
 					}
+					const attachStartedAt = performance.now();
 					createOrAttachRef.current(
 						{
 							paneId,
@@ -402,6 +403,13 @@ export function useTerminalLifecycle({
 						},
 						{
 							onSuccess: (result) => {
+								if (DEBUG_TERMINAL) {
+									console.log(`[Terminal] createOrAttach success: ${paneId}`, {
+										durationMs: Math.round(performance.now() - attachStartedAt),
+										isNew: result.isNew,
+										isColdRestore: !!result.isColdRestore,
+									});
+								}
 								if (!isAttachActive()) return;
 								setConnectionError(null);
 								clearPaneInitialDataRef.current(paneId);
@@ -441,6 +449,12 @@ export function useTerminalLifecycle({
 								maybeApplyInitialState();
 							},
 							onError: (error) => {
+								if (DEBUG_TERMINAL) {
+									console.warn(`[Terminal] createOrAttach error: ${paneId}`, {
+										durationMs: Math.round(performance.now() - attachStartedAt),
+										error: error.message,
+									});
+								}
 								if (!isAttachActive()) return;
 								if (error.message?.includes("TERMINAL_SESSION_KILLED")) {
 									wasKilledByUserRef.current = true;
@@ -590,8 +604,17 @@ export function useTerminalLifecycle({
 				reattachRecovery.pendingFrame = null;
 
 				const now = Date.now();
-				if (now - reattachRecovery.lastRunAt < reattachRecovery.throttleMs)
+				if (now - reattachRecovery.lastRunAt < reattachRecovery.throttleMs) {
+					// Schedule a retry after the remaining throttle window so the recovery
+					// is not permanently lost when focus events fire in rapid succession.
+					const remaining =
+						reattachRecovery.throttleMs - (now - reattachRecovery.lastRunAt);
+					setTimeout(() => {
+						if (!isUnmounted)
+							scheduleReattachRecovery(reattachRecovery.pendingForceResize);
+					}, remaining + 1);
 					return;
+				}
 				reattachRecovery.lastRunAt = now;
 
 				const shouldForceResize = reattachRecovery.pendingForceResize;

@@ -85,8 +85,11 @@ export function TabView({ tab }: TabViewProps) {
 		return result;
 	}, [layoutPaneIds, allPanes, tab.id]);
 
-	const validPaneIds = new Set(Object.keys(tabPanes));
-	const cleanedLayout = cleanLayout(tab.layout, validPaneIds);
+	const validPaneIds = useMemo(() => new Set(Object.keys(tabPanes)), [tabPanes]);
+	const cleanedLayout = useMemo(
+		() => cleanLayout(tab.layout, validPaneIds),
+		[tab.layout, validPaneIds],
+	);
 
 	// Auto-remove tab when all panes are gone
 	useEffect(() => {

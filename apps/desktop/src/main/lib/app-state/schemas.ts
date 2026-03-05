@@ -13,10 +13,34 @@ export interface ThemeState {
 	customThemes: Theme[];
 }
 
+export type SshAuthMode = "agent" | "key" | "password";
+
+export interface SshCredentialEntry {
+	authMode: SshAuthMode;
+	user: string | null;
+	port: number | null;
+	identityFile: string | null;
+	passwordCiphertext: string | null;
+	updatedAt: number;
+}
+
+export interface SshMountStateEntry {
+	mountPath: string;
+	lastMountedAt: number | null;
+	lastUnmountedAt: number | null;
+	lastError: string | null;
+}
+
+export interface SshState {
+	credentialsByAlias: Record<string, SshCredentialEntry>;
+	mountsByAlias: Record<string, SshMountStateEntry>;
+}
+
 export interface AppState {
 	tabsState: BaseTabsState;
 	themeState: ThemeState;
 	hotkeysState: HotkeysState;
+	sshState: SshState;
 }
 
 export const defaultAppState: AppState = {
@@ -32,4 +56,8 @@ export const defaultAppState: AppState = {
 		customThemes: [],
 	},
 	hotkeysState: createDefaultHotkeysState(),
+	sshState: {
+		credentialsByAlias: {},
+		mountsByAlias: {},
+	},
 };

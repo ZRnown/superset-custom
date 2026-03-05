@@ -1,5 +1,6 @@
 import type { TerminalPreset } from "@superset/local-db";
 import { FEATURE_FLAGS } from "@superset/shared/constants";
+import { toast } from "@superset/ui/sonner";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate, useParams } from "@tanstack/react-router";
@@ -12,7 +13,9 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { useCreateOrAttachWithTheme } from "renderer/hooks/useCreateOrAttachWithTheme";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { launchCommandInPane } from "renderer/lib/terminal/launch-command";
 import { usePresets } from "renderer/react-query/presets";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useTabsStore } from "renderer/stores/tabs/store";
@@ -48,7 +51,10 @@ export function GroupStrip() {
 	const movePaneToNewTab = useTabsStore((s) => s.movePaneToNewTab);
 	const reorderTabs = useTabsStore((s) => s.reorderTabs);
 
-	const setTabAutoTitle = useTabsStore((s) => s.setTabAutoTitle);
+	const setTabAutoTitles = useTabsStore((s) => s.setTabAutoTitles);
+	const createOrAttach = useCreateOrAttachWithTheme();
+	const terminalWrite = electronTrpc.terminal.write.useMutation();
+	const sshLaunchCommand = electronTrpc.ssh.getLaunchCommand.useMutation();
 	const { presets } = usePresets();
 	const navigate = useNavigate();
 
@@ -111,6 +117,10 @@ export function GroupStrip() {
 				: [],
 		[activeWorkspaceId, allTabs],
 	);
+	const workspaceTabIdSet = useMemo(
+		() => new Set(tabs.map((tab) => tab.id)),
+		[tabs],
+	);
 
 	const activeTabId = useMemo(() => {
 		if (!activeWorkspaceId) return null;
@@ -122,30 +132,29 @@ export function GroupStrip() {
 		});
 	}, [activeWorkspaceId, activeTabIds, allTabs, tabHistoryStacks]);
 
-	// Compute aggregate status per tab using shared priority logic
-	const tabStatusMap = useMemo(() => {
-		const result = new Map<string, ActivePaneStatus>();
+	const { tabStatusMap, chatPaneSessionMap } = useMemo(() => {
+		const nextTabStatusMap = new Map<string, ActivePaneStatus>();
+		const nextChatPaneSessionMap = new Map<string, string>(); // sessionId → tabId
 		for (const pane of Object.values(panes)) {
-			if (!pane.status || pane.status === "idle") continue;
-			const higher = pickHigherStatus(result.get(pane.tabId), pane.status);
-			if (higher !== "idle") {
-				result.set(pane.tabId, higher);
+			if (!workspaceTabIdSet.has(pane.tabId)) continue;
+			if (pane.status && pane.status !== "idle") {
+				const higher = pickHigherStatus(
+					nextTabStatusMap.get(pane.tabId),
+					pane.status,
+				);
+				if (higher !== "idle") {
+					nextTabStatusMap.set(pane.tabId, higher);
+				}
 			}
-		}
-		return result;
-	}, [panes]);
-
-	// Sync Electric session titles → tab names for all Mastra chat tabs in this workspace
-	const chatPaneSessionMap = useMemo(() => {
-		const map = new Map<string, string>(); // sessionId → tabId
-		for (const pane of Object.values(panes)) {
 			if (pane.type === "chat-mastra" && pane.chatMastra?.sessionId) {
-				const tab = tabs.find((t) => t.id === pane.tabId);
-				if (tab) map.set(pane.chatMastra.sessionId, tab.id);
+				nextChatPaneSessionMap.set(pane.chatMastra.sessionId, pane.tabId);
 			}
 		}
-		return map;
-	}, [panes, tabs]);
+		return {
+			tabStatusMap: nextTabStatusMap,
+			chatPaneSessionMap: nextChatPaneSessionMap,
+		};
+	}, [panes, workspaceTabIdSet]);
 	const shouldSyncChatTitles =
 		Boolean(activeWorkspaceId) && chatPaneSessionMap.size > 0;
 	const workspaceIdForChatTitleSync = shouldSyncChatTitles
@@ -170,13 +179,22 @@ export function GroupStrip() {
 	useEffect(() => {
 		if (!shouldSyncChatTitles) return;
 		if (!chatSessions) return;
+		const updates: Array<{ tabId: string; title: string }> = [];
 		for (const session of chatSessions) {
 			const tabId = chatPaneSessionMap.get(session.id);
 			if (tabId) {
-				setTabAutoTitle(tabId, session.title || "New Chat");
+				updates.push({ tabId, title: session.title || "New Chat" });
 			}
 		}
-	}, [chatSessions, chatPaneSessionMap, setTabAutoTitle, shouldSyncChatTitles]);
+		if (updates.length > 0) {
+			setTabAutoTitles(updates);
+		}
+	}, [
+		chatSessions,
+		chatPaneSessionMap,
+		setTabAutoTitles,
+		shouldSyncChatTitles,
+	]);
 
 	const handleAddGroup = () => {
 		if (!activeWorkspaceId) return;
@@ -193,6 +211,47 @@ export function GroupStrip() {
 		addBrowserTab(activeWorkspaceId);
 	};
 
+	const handleOpenSshHost = useCallback(
+		(alias: string) => {
+			if (!activeWorkspaceId) return;
+			const nextAlias = alias.trim();
+			if (!nextAlias) return;
+
+			const { tabId, paneId } = addTab(activeWorkspaceId, {});
+			renameTab(tabId, `SSH · ${nextAlias}`);
+			setActiveTab(activeWorkspaceId, tabId);
+
+			void sshLaunchCommand
+				.mutateAsync({ alias: nextAlias })
+				.then(({ launchCommand }) =>
+					launchCommandInPane({
+						paneId,
+						tabId,
+						workspaceId: activeWorkspaceId,
+						command: launchCommand,
+						createOrAttach: (input) => createOrAttach.mutateAsync(input),
+						write: (input) => terminalWrite.mutateAsync(input),
+					}),
+				)
+				.catch((error) => {
+					console.error("[ssh-hub] Failed to open SSH host", {
+						alias: nextAlias,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					toast.error(`Failed to connect to ${nextAlias}`);
+				});
+		},
+		[
+			activeWorkspaceId,
+			addTab,
+			createOrAttach,
+			renameTab,
+			setActiveTab,
+			sshLaunchCommand,
+			terminalWrite,
+		],
+	);
+
 	const handleOpenPreset = useCallback(
 		(preset: TerminalPreset) => {
 			if (!activeWorkspaceId) return;
@@ -205,19 +264,35 @@ export function GroupStrip() {
 		navigate({ to: "/settings/presets" });
 	}, [navigate]);
 
-	const handleSelectGroup = (tabId: string) => {
-		if (activeWorkspaceId) {
-			setActiveTab(activeWorkspaceId, tabId);
-		}
-	};
+	const handleSelectGroup = useCallback(
+		(tabId: string) => {
+			if (activeWorkspaceId) {
+				setActiveTab(activeWorkspaceId, tabId);
+			}
+		},
+		[activeWorkspaceId, setActiveTab],
+	);
 
-	const handleCloseGroup = (tabId: string) => {
-		removeTab(tabId);
-	};
+	const handleCloseGroup = useCallback(
+		(tabId: string) => {
+			removeTab(tabId);
+		},
+		[removeTab],
+	);
 
-	const handleRenameGroup = (tabId: string, newName: string) => {
-		renameTab(tabId, newName);
-	};
+	const handleRenameGroup = useCallback(
+		(tabId: string, newName: string) => {
+			renameTab(tabId, newName);
+		},
+		[renameTab],
+	);
+
+	const handlePaneDropToTab = useCallback(
+		(paneId: string, tabId: string) => {
+			movePaneToTab(paneId, tabId);
+		},
+		[movePaneToTab],
+	);
 
 	const handleReorderTabs = useCallback(
 		(fromIndex: number, toIndex: number) => {
@@ -276,6 +351,7 @@ export function GroupStrip() {
 			onDropToNewTab={movePaneToNewTab}
 			isLastPaneInTab={checkIsLastPaneInTab}
 			onAddTerminal={handleAddGroup}
+			onOpenSshHost={handleOpenSshHost}
 			onAddChat={handleAddChat}
 			onAddBrowser={handleAddBrowser}
 			onOpenPreset={handleOpenPreset}
@@ -311,10 +387,10 @@ export function GroupStrip() {
 											index={index}
 											isActive={tab.id === activeTabId}
 											status={tabStatusMap.get(tab.id) ?? null}
-											onSelect={() => handleSelectGroup(tab.id)}
-											onClose={() => handleCloseGroup(tab.id)}
-											onRename={(newName) => handleRenameGroup(tab.id, newName)}
-											onPaneDrop={(paneId) => movePaneToTab(paneId, tab.id)}
+											onSelect={handleSelectGroup}
+											onClose={handleCloseGroup}
+											onRename={handleRenameGroup}
+											onPaneDrop={handlePaneDropToTab}
 											onReorder={handleReorderTabs}
 										/>
 									</div>
@@ -327,7 +403,7 @@ export function GroupStrip() {
 							className={`h-full shrink-0 ${
 								!useCompactAddButton
 									? hasAiChat
-										? "w-[220px]"
+										? "w-[260px]"
 										: "w-[170px]"
 									: "w-10"
 							}`}

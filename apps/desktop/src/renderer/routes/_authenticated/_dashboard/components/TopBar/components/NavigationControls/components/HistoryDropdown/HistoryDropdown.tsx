@@ -176,6 +176,11 @@ export function HistoryDropdown() {
 		);
 	});
 
+	const navigateToEntry = (path: string) => {
+		if (path === currentPath) return;
+		navigate({ to: path });
+	};
+
 	if (filteredEntries.length === 0) {
 		return (
 			<Tooltip delayDuration={300}>
@@ -218,7 +223,7 @@ export function HistoryDropdown() {
 							entry={entry}
 							isCurrent={entry.path === currentPath}
 							taskData={taskData ?? []}
-							onSelect={() => navigate({ to: entry.path })}
+							onSelect={() => navigateToEntry(entry.path)}
 						/>
 					) : (
 						<WorkspaceRow
@@ -226,7 +231,7 @@ export function HistoryDropdown() {
 							entry={entry}
 							isCurrent={entry.path === currentPath}
 							workspaceData={workspaceData}
-							onSelect={() => navigate({ to: entry.path })}
+							onSelect={() => navigateToEntry(entry.path)}
 						/>
 					),
 				)}

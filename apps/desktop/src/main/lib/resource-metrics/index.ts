@@ -30,6 +30,7 @@ interface WorkspaceMetrics {
 interface AppMetrics extends ProcessMetrics {
 	main: ProcessMetrics;
 	renderer: ProcessMetrics;
+	other: ProcessMetrics;
 }
 
 export interface ResourceMetricsSnapshot {
@@ -69,11 +70,13 @@ export async function collectResourceMetrics(): Promise<ResourceMetricsSnapshot>
 	const sessionPidTrees = await Promise.all(
 		allEntries.map(async (entry) => ({
 			entry,
-			treePids: await getProcessTree(entry.pid),
+			treePids: Array.from(new Set(await getProcessTree(entry.pid))),
 		})),
 	);
 
-	const allPids = sessionPidTrees.flatMap((s) => s.treePids);
+	const allPids = Array.from(
+		new Set(sessionPidTrees.flatMap((session) => session.treePids)),
+	);
 	let pidStats: Record<number, pidusage.Status> = {};
 	if (allPids.length > 0) {
 		try {
@@ -86,19 +89,32 @@ export async function collectResourceMetrics(): Promise<ResourceMetricsSnapshot>
 	const electronMetrics = app.getAppMetrics();
 	const main: ProcessMetrics = { cpu: 0, memory: 0 };
 	const renderer: ProcessMetrics = { cpu: 0, memory: 0 };
+	const other: ProcessMetrics = { cpu: 0, memory: 0 };
+
+	const isRendererProcessType = (type: string): boolean => {
+		const normalized = type.toLowerCase();
+		return normalized === "renderer" || normalized === "tab";
+	};
+
 	for (const proc of electronMetrics) {
 		const cpu = proc.cpu.percentCPUUsage;
 		// workingSetSize is in KB
 		const memory = proc.memory.workingSetSize * 1024;
-		const target = proc.type === "Browser" ? main : renderer;
+		let target = other;
+		if (proc.type === "Browser") {
+			target = main;
+		} else if (isRendererProcessType(proc.type)) {
+			target = renderer;
+		}
 		target.cpu += cpu;
 		target.memory += memory;
 	}
 	const appMetrics: AppMetrics = {
-		cpu: main.cpu + renderer.cpu,
-		memory: main.memory + renderer.memory,
+		cpu: main.cpu + renderer.cpu + other.cpu,
+		memory: main.memory + renderer.memory + other.memory,
 		main,
 		renderer,
+		other,
 	};
 
 	const sessionAggregated = new Map<string, { cpu: number; memory: number }>();

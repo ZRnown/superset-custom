@@ -4,9 +4,20 @@ import { env } from "../env";
 const CACHE_TTL_SECONDS = 60 * 60; // 1 hour
 const CACHE_PREFIX = `posthog:${env.NODE_ENV}:`;
 const isKVConfigured = Boolean(env.KV_REST_API_URL && env.KV_REST_API_TOKEN);
+const POSTHOG_QUERY_TIMEOUT_MS = 15_000;
+const MAX_MEMORY_CACHE_ENTRIES = 200;
 
 // Fallback in-memory cache for local dev without KV
 const memoryCache = new Map<string, { data: unknown; expiresAt: number }>();
+const inFlightQueries = new Map<string, Promise<PostHogQueryResult<unknown>>>();
+
+function evictMemoryCacheIfNeeded(): void {
+	while (memoryCache.size > MAX_MEMORY_CACHE_ENTRIES) {
+		const oldestKey = memoryCache.keys().next().value;
+		if (!oldestKey) break;
+		memoryCache.delete(oldestKey);
+	}
+}
 
 async function getCached<T>(key: string): Promise<T | null> {
 	const cacheKey = `${CACHE_PREFIX}${key}`;
@@ -26,6 +37,9 @@ async function getCached<T>(key: string): Promise<T | null> {
 		memoryCache.delete(cacheKey);
 		return null;
 	}
+	// Refresh LRU order on hit.
+	memoryCache.delete(cacheKey);
+	memoryCache.set(cacheKey, entry);
 	return entry.data as T;
 }
 
@@ -46,6 +60,7 @@ async function setCache<T>(key: string, data: T): Promise<void> {
 		data,
 		expiresAt: Date.now() + CACHE_TTL_SECONDS * 1000,
 	});
+	evictMemoryCacheIfNeeded();
 }
 
 export interface PostHogQueryResult<T = unknown> {
@@ -159,26 +174,54 @@ export async function executeQuery<T = unknown>(
 		return cached;
 	}
 
-	const response = await fetch(
-		`${env.POSTHOG_API_HOST}/api/projects/${env.POSTHOG_PROJECT_ID}/query/`,
-		{
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bearer ${env.POSTHOG_API_KEY}`,
-			},
-			body: JSON.stringify({ query }),
-		},
-	);
-
-	if (!response.ok) {
-		const errorText = await response.text();
-		throw new Error(`PostHog API error: ${response.status} - ${errorText}`);
+	const existingQuery = inFlightQueries.get(cacheKey);
+	if (existingQuery) {
+		return existingQuery as Promise<PostHogQueryResult<T>>;
 	}
 
-	const result = (await response.json()) as PostHogQueryResult<T>;
-	await setCache(cacheKey, result);
-	return result;
+	const queryPromise = (async (): Promise<PostHogQueryResult<T>> => {
+		let response: Response;
+		try {
+			response = await fetch(
+				`${env.POSTHOG_API_HOST}/api/projects/${env.POSTHOG_PROJECT_ID}/query/`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${env.POSTHOG_API_KEY}`,
+					},
+					body: JSON.stringify({ query }),
+					signal: AbortSignal.timeout(POSTHOG_QUERY_TIMEOUT_MS),
+				},
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				(error.name === "AbortError" || error.name === "TimeoutError")
+			) {
+				throw new Error("PostHog API request timed out");
+			}
+			throw error;
+		}
+
+		if (!response.ok) {
+			const errorText = await response.text();
+			throw new Error(`PostHog API error: ${response.status} - ${errorText}`);
+		}
+
+		const result = (await response.json()) as PostHogQueryResult<T>;
+		await setCache(cacheKey, result);
+		return result;
+	})().finally(() => {
+		inFlightQueries.delete(cacheKey);
+	});
+
+	inFlightQueries.set(
+		cacheKey,
+		queryPromise as Promise<PostHogQueryResult<unknown>>,
+	);
+
+	return queryPromise;
 }
 
 export async function executeFunnelQuery(

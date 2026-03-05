@@ -629,12 +629,13 @@ export const PromptInput = ({
 	const openFileDialog = usingProvider
 		? controller.attachments.openFileDialog
 		: openFileDialogLocal;
+	const registerFileInput = controller?.__registerFileInput;
 
 	// Let provider know about our hidden file input so external menus can call openFileDialog()
 	useEffect(() => {
-		if (!usingProvider) return;
-		controller.__registerFileInput(inputRef, () => inputRef.current?.click());
-	}, [usingProvider, controller]);
+		if (!usingProvider || !registerFileInput) return;
+		registerFileInput(inputRef, () => inputRef.current?.click());
+	}, [registerFileInput, usingProvider]);
 
 	// Note: File input cannot be programmatically set for security reasons
 	// The syncHiddenInput prop is no longer functional

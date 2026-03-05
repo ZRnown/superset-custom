@@ -82,6 +82,7 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	tabIdRef.current = tabId;
 	const setFocusedPane = useTabsStore((s) => s.setFocusedPane);
 	const setPaneName = useTabsStore((s) => s.setPaneName);
+	const removePane = useTabsStore((s) => s.removePane);
 	const focusedPaneId = useTabsStore((s) => s.focusedPaneIds[tabId]);
 	const terminalTheme = useTerminalTheme();
 
@@ -250,6 +251,7 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 			setConnectionError,
 			updateModesFromData,
 			updateCwdFromData,
+			onShellExit: () => removePane(paneId),
 		});
 
 	// Populate handler refs for flushPendingEvents to use
@@ -354,6 +356,16 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 		registerPasteCallbackRef,
 		unregisterPasteCallbackRef,
 	});
+
+	// Ensure terminal input caret is restored when this pane becomes focused via sidebar/pane switching.
+	useEffect(() => {
+		if (!isFocused || document.hidden) return;
+		const frame = requestAnimationFrame(() => {
+			if (!isFocusedRef.current) return;
+			xtermRef.current?.focus();
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [isFocused, isFocusedRef]);
 
 	useEffect(() => {
 		const xterm = xtermRef.current;

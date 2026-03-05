@@ -24,8 +24,16 @@ export interface SshCredentialEntry {
 	updatedAt: number;
 }
 
+export interface SshMountStateEntry {
+	mountPath: string;
+	lastMountedAt: number | null;
+	lastUnmountedAt: number | null;
+	lastError: string | null;
+}
+
 export interface SshState {
 	credentialsByAlias: Record<string, SshCredentialEntry>;
+	mountsByAlias: Record<string, SshMountStateEntry>;
 }
 
 export interface AppState {
@@ -50,5 +58,6 @@ export const defaultAppState: AppState = {
 	hotkeysState: createDefaultHotkeysState(),
 	sshState: {
 		credentialsByAlias: {},
+		mountsByAlias: {},
 	},
 };

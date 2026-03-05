@@ -6,6 +6,9 @@ import { toast } from "@superset/ui/sonner";
 import { useEffect, useMemo, useState } from "react";
 import {
 	LuCornerDownRight,
+	LuFolderOpen,
+	LuHardDrive,
+	LuInfo,
 	LuKeyRound,
 	LuPlug,
 	LuSearch,
@@ -43,6 +46,25 @@ interface SshHostItem {
 		hasPassword: boolean;
 		updatedAt: number | null;
 	};
+}
+
+interface SshMountInfo {
+	alias: string;
+	mountPath: string;
+	isMounted: boolean;
+	lastMountedAt: number | null;
+	lastUnmountedAt: number | null;
+	lastError: string | null;
+}
+
+interface SshRuntimeInfo {
+	alias: string;
+	os: string;
+	hostname: string;
+	uptime: string;
+	diskRoot: string;
+	remoteUser: string;
+	fetchedAt: number;
 }
 
 interface CredentialDraft {
@@ -90,20 +112,41 @@ export function SshConnectDialog({
 	const [draftByAlias, setDraftByAlias] = useState<
 		Record<string, CredentialDraft>
 	>({});
+	const [runtimeByAlias, setRuntimeByAlias] = useState<
+		Record<string, SshRuntimeInfo>
+	>({});
+
 	const sshHostsQuery = electronTrpc.ssh.listHosts.useQuery(undefined, {
 		enabled: open,
 		staleTime: 30_000,
+	});
+	const sshCapabilitiesQuery = electronTrpc.ssh.getCapabilities.useQuery(
+		undefined,
+		{
+			enabled: open,
+			staleTime: 60_000,
+		},
+	);
+	const sshMountsQuery = electronTrpc.ssh.listMounts.useQuery(undefined, {
+		enabled: open,
+		staleTime: 2000,
+		refetchInterval: open ? 5000 : false,
 	});
 	const saveCredentialMutation =
 		electronTrpc.ssh.upsertCredential.useMutation();
 	const clearCredentialMutation =
 		electronTrpc.ssh.clearCredential.useMutation();
+	const mountHostMutation = electronTrpc.ssh.mountHost.useMutation();
+	const unmountHostMutation = electronTrpc.ssh.unmountHost.useMutation();
+	const inspectHostMutation = electronTrpc.ssh.inspectHost.useMutation();
+	const openInFinderMutation = electronTrpc.external.openInFinder.useMutation();
 
 	useEffect(() => {
 		if (!open) {
 			setSearch("");
 			setEditingAlias(null);
 			setDraftByAlias({});
+			setRuntimeByAlias({});
 		}
 	}, [open]);
 
@@ -111,6 +154,14 @@ export function SshConnectDialog({
 		() => (sshHostsQuery.data?.hosts ?? []) as SshHostItem[],
 		[sshHostsQuery.data?.hosts],
 	);
+
+	const mountsByAlias = useMemo(() => {
+		const map = new Map<string, SshMountInfo>();
+		for (const mount of (sshMountsQuery.data?.mounts ?? []) as SshMountInfo[]) {
+			map.set(mount.alias, mount);
+		}
+		return map;
+	}, [sshMountsQuery.data?.mounts]);
 
 	const filteredHosts = useMemo(() => {
 		const needle = search.trim().toLowerCase();
@@ -127,6 +178,18 @@ export function SshConnectDialog({
 			return false;
 		});
 	}, [hosts, search]);
+
+	const ensureDraft = (host: SshHostItem) => {
+		setDraftByAlias((previous) => {
+			if (previous[host.alias]) {
+				return previous;
+			}
+			return {
+				...previous,
+				[host.alias]: createDraft(host),
+			};
+		});
+	};
 
 	const setDraftPatch = (alias: string, patch: Partial<CredentialDraft>) => {
 		setDraftByAlias((previous) => {
@@ -149,18 +212,6 @@ export function SshConnectDialog({
 					...current,
 					...patch,
 				},
-			};
-		});
-	};
-
-	const ensureDraft = (host: SshHostItem) => {
-		setDraftByAlias((previous) => {
-			if (previous[host.alias]) {
-				return previous;
-			}
-			return {
-				...previous,
-				[host.alias]: createDraft(host),
 			};
 		});
 	};
@@ -190,7 +241,7 @@ export function SshConnectDialog({
 			password: "",
 			clearPassword: false,
 		});
-		await sshHostsQuery.refetch();
+		await Promise.all([sshHostsQuery.refetch(), sshMountsQuery.refetch()]);
 		toast.success(`Saved SSH auth for ${host.alias}`);
 	};
 
@@ -205,9 +256,42 @@ export function SshConnectDialog({
 		toast.success(`Cleared saved auth for ${alias}`);
 	};
 
+	const toggleMount = async (
+		host: SshHostItem,
+		mountInfo: SshMountInfo | null,
+	) => {
+		if (mountInfo?.isMounted) {
+			await unmountHostMutation.mutateAsync({ alias: host.alias });
+			toast.success(`Unmounted ${host.alias}`);
+		} else {
+			await mountHostMutation.mutateAsync({
+				alias: host.alias,
+				mountPath: mountInfo?.mountPath ?? null,
+			});
+			toast.success(`Mounted ${host.alias}`);
+		}
+		await sshMountsQuery.refetch();
+	};
+
+	const inspectHost = async (alias: string) => {
+		const info = await inspectHostMutation.mutateAsync({ alias });
+		setRuntimeByAlias((previous) => ({
+			...previous,
+			[alias]: info as SshRuntimeInfo,
+		}));
+	};
+
+	const hasSshfs = sshCapabilitiesQuery.data?.hasSshfs ?? false;
+	const isBusy =
+		saveCredentialMutation.isPending ||
+		clearCredentialMutation.isPending ||
+		mountHostMutation.isPending ||
+		unmountHostMutation.isPending ||
+		inspectHostMutation.isPending;
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-[860px] overflow-hidden border-border/70 p-0">
+			<DialogContent className="max-w-[920px] overflow-hidden border-border/70 p-0">
 				<div className="border-b border-border/60 bg-muted/20 px-5 py-4">
 					<div className="flex items-center gap-2">
 						<div className="rounded-md border border-border p-1.5 text-muted-foreground">
@@ -216,8 +300,8 @@ export function SshConnectDialog({
 						<div>
 							<p className="text-sm font-medium text-foreground">SSH Hub</p>
 							<p className="text-xs text-muted-foreground">
-								Hosts from <code>~/.ssh/config</code>. Save credentials once,
-								then connect directly.
+								Hosts from <code>~/.ssh/config</code>. Save auth, mount remote
+								files via SSHFS, and inspect server runtime info.
 							</p>
 						</div>
 					</div>
@@ -230,9 +314,14 @@ export function SshConnectDialog({
 							className="h-8 pl-8 text-xs"
 						/>
 					</div>
+					{!hasSshfs ? (
+						<p className="mt-2 text-[11px] text-muted-foreground">
+							SSHFS not found. Install it first to enable mount/unmount.
+						</p>
+					) : null}
 				</div>
 
-				<div className="max-h-[65vh] overflow-y-auto px-4 py-3">
+				<div className="max-h-[68vh] overflow-y-auto px-4 py-3">
 					{sshHostsQuery.isLoading ? (
 						<div className="rounded-lg border border-dashed border-border/70 p-6 text-center text-xs text-muted-foreground">
 							Reading SSH hosts...
@@ -247,10 +336,9 @@ export function SshConnectDialog({
 						<div className="space-y-3">
 							{filteredHosts.map((host) => {
 								const isEditing = editingAlias === host.alias;
+								const mountInfo = mountsByAlias.get(host.alias) ?? null;
+								const runtime = runtimeByAlias[host.alias] ?? null;
 								const draft = draftByAlias[host.alias] ?? createDraft(host);
-								const busy =
-									saveCredentialMutation.isPending ||
-									clearCredentialMutation.isPending;
 
 								return (
 									<div
@@ -259,7 +347,7 @@ export function SshConnectDialog({
 									>
 										<div className="flex items-start justify-between gap-3">
 											<div className="min-w-0 flex-1">
-												<div className="flex items-center gap-2">
+												<div className="flex flex-wrap items-center gap-2">
 													<span className="truncate font-mono text-xs font-semibold text-foreground">
 														{host.alias}
 													</span>
@@ -278,6 +366,13 @@ export function SshConnectDialog({
 													>
 														<LuShieldCheck className="mr-1 size-3" />
 														{host.credential.authMode}
+													</Badge>
+													<Badge
+														variant="outline"
+														className="h-5 rounded-full border-border/70 px-1.5 text-[10px]"
+													>
+														<LuHardDrive className="mr-1 size-3" />
+														{mountInfo?.isMounted ? "Mounted" : "Unmounted"}
 													</Badge>
 												</div>
 												<p className="mt-1 truncate text-[11px] text-muted-foreground">
@@ -300,12 +395,18 @@ export function SshConnectDialog({
 															Jump: {host.proxyJump}
 														</span>
 													) : null}
+													{mountInfo?.mountPath ? (
+														<span className="inline-flex items-center gap-1">
+															<LuHardDrive className="size-3" />
+															{mountInfo.mountPath}
+														</span>
+													) : null}
 												</div>
 												<p className="mt-1 truncate font-mono text-[10px] text-muted-foreground/80">
 													{host.commandPreview}
 												</p>
 											</div>
-											<div className="flex shrink-0 items-center gap-1.5">
+											<div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
 												<Button
 													type="button"
 													size="sm"
@@ -318,6 +419,67 @@ export function SshConnectDialog({
 												>
 													<LuPlug className="mr-1 size-3.5" />
 													Connect
+												</Button>
+												<Button
+													type="button"
+													size="sm"
+													variant="outline"
+													className="h-7 px-2 text-xs"
+													disabled={!hasSshfs || isBusy}
+													onClick={() => {
+														void toggleMount(host, mountInfo).catch((error) => {
+															console.error(
+																"[ssh-hub] Failed to toggle mount",
+																error,
+															);
+															toast.error(
+																`Failed to ${mountInfo?.isMounted ? "unmount" : "mount"} ${host.alias}`,
+															);
+														});
+													}}
+												>
+													{mountInfo?.isMounted ? "Unmount" : "Mount"}
+												</Button>
+												<Button
+													type="button"
+													size="sm"
+													variant="outline"
+													className="h-7 px-2 text-xs"
+													disabled={!mountInfo?.mountPath}
+													onClick={() => {
+														if (!mountInfo?.mountPath) return;
+														void openInFinderMutation
+															.mutateAsync(mountInfo.mountPath)
+															.catch((error) => {
+																console.error(
+																	"[ssh-hub] Failed to open mount path",
+																	error,
+																);
+																toast.error("Failed to open mount folder");
+															});
+													}}
+												>
+													<LuFolderOpen className="mr-1 size-3.5" />
+													Folder
+												</Button>
+												<Button
+													type="button"
+													size="sm"
+													variant="outline"
+													className="h-7 px-2 text-xs"
+													disabled={isBusy}
+													onClick={() => {
+														void inspectHost(host.alias).catch((error) => {
+															console.error(
+																"[ssh-hub] Failed to inspect host",
+																error,
+															);
+															toast.error(`Failed to inspect ${host.alias}`);
+														});
+													}}
+												>
+													<LuInfo className="mr-1 size-3.5" />
+													Inspect
 												</Button>
 												<Button
 													type="button"
@@ -335,6 +497,46 @@ export function SshConnectDialog({
 												</Button>
 											</div>
 										</div>
+
+										{runtime ? (
+											<div className="mt-2 rounded-md border border-border/70 bg-muted/10 p-2 text-[11px] text-muted-foreground">
+												<div className="grid grid-cols-1 gap-1 md:grid-cols-2">
+													<span>
+														<span className="text-foreground/80">OS:</span>{" "}
+														{runtime.os}
+													</span>
+													<span>
+														<span className="text-foreground/80">
+															Hostname:
+														</span>{" "}
+														{runtime.hostname}
+													</span>
+													<span>
+														<span className="text-foreground/80">Uptime:</span>{" "}
+														{runtime.uptime}
+													</span>
+													<span>
+														<span className="text-foreground/80">Disk /:</span>{" "}
+														{runtime.diskRoot}
+													</span>
+													<span>
+														<span className="text-foreground/80">
+															Remote user:
+														</span>{" "}
+														{runtime.remoteUser}
+													</span>
+													<span>
+														<span className="text-foreground/80">Fetched:</span>{" "}
+														{formatUpdatedAt(runtime.fetchedAt)}
+													</span>
+												</div>
+												{mountInfo?.lastError ? (
+													<p className="mt-1 text-[10px] text-destructive">
+														Last mount error: {mountInfo.lastError}
+													</p>
+												) : null}
+											</div>
+										) : null}
 
 										{isEditing ? (
 											<div className="mt-3 rounded-md border border-border/70 bg-muted/15 p-3">
@@ -463,7 +665,7 @@ export function SshConnectDialog({
 														type="button"
 														size="sm"
 														className="h-7 text-xs"
-														disabled={busy}
+														disabled={isBusy}
 														onClick={() => {
 															void saveCredential(host).catch((error) => {
 																console.error(
@@ -483,7 +685,7 @@ export function SshConnectDialog({
 														size="sm"
 														variant="outline"
 														className="h-7 text-xs"
-														disabled={busy}
+														disabled={isBusy}
 														onClick={() => {
 															void clearCredential(host.alias).catch(
 																(error) => {

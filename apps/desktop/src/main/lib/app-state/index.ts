@@ -37,6 +37,10 @@ function ensureValidShape(data: Partial<AppState>): AppState {
 				...defaultAppState.sshState.credentialsByAlias,
 				...(data.sshState?.credentialsByAlias ?? {}),
 			},
+			mountsByAlias: {
+				...defaultAppState.sshState.mountsByAlias,
+				...(data.sshState?.mountsByAlias ?? {}),
+			},
 		},
 	};
 }

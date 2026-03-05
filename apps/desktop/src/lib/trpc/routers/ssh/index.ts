@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,9 +40,38 @@ interface SshHostEntry extends ParsedSshHost {
 	credential: SshCredentialPublic;
 }
 
+interface SshMountStateEntry {
+	mountPath: string;
+	lastMountedAt: number | null;
+	lastUnmountedAt: number | null;
+	lastError: string | null;
+}
+
+interface SshMountEntry {
+	alias: string;
+	mountPath: string;
+	isMounted: boolean;
+	lastMountedAt: number | null;
+	lastUnmountedAt: number | null;
+	lastError: string | null;
+}
+
 interface ParseState {
 	visitedFiles: Set<string>;
 	hostsByAlias: Map<string, ParsedSshHost>;
+}
+
+interface RunCommandOptions {
+	timeoutMs?: number;
+	stdin?: string;
+	allowNonZero?: boolean;
+	env?: NodeJS.ProcessEnv;
+}
+
+interface RunCommandResult {
+	stdout: string;
+	stderr: string;
+	exitCode: number;
 }
 
 const INFERRED_TAGS = [
@@ -59,6 +89,12 @@ const INFERRED_TAGS = [
 	"jump",
 ] as const;
 
+const SSHFS_MOUNT_ROOT = path.join(os.homedir(), ".superset", "sshfs");
+const DEFAULT_TIMEOUT_MS = 15_000;
+const INSPECT_TIMEOUT_MS = 12_000;
+const MOUNT_TIMEOUT_MS = 30_000;
+const MOUNT_SEPARATOR = "__SUPERSET_SSH_INFO_SEP__";
+
 const upsertCredentialInputSchema = z.object({
 	alias: z.string().trim().min(1),
 	authMode: z.enum(["agent", "key", "password"]),
@@ -71,6 +107,11 @@ const upsertCredentialInputSchema = z.object({
 
 const aliasInputSchema = z.object({
 	alias: z.string().trim().min(1),
+});
+
+const mountHostInputSchema = z.object({
+	alias: z.string().trim().min(1),
+	mountPath: z.string().trim().optional().nullable(),
 });
 
 function expandHome(inputPath: string): string {
@@ -202,6 +243,250 @@ function collectTags(alias: string, hostName: string | null): string[] {
 		}
 	}
 	return Array.from(result);
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
+function toNullableString(value: string | null | undefined): string | null {
+	if (typeof value !== "string") return null;
+	const next = value.trim();
+	return next.length > 0 ? next : null;
+}
+
+function sanitizeAliasForPath(alias: string): string {
+	const normalized = alias
+		.toLowerCase()
+		.replace(/[^a-z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return normalized || "host";
+}
+
+function getDefaultMountPath(alias: string): string {
+	return path.join(SSHFS_MOUNT_ROOT, sanitizeAliasForPath(alias));
+}
+
+function resolveMountPath(
+	alias: string,
+	mountPath: string | null | undefined,
+): string {
+	const input = toNullableString(mountPath);
+	if (!input) {
+		return getDefaultMountPath(alias);
+	}
+	return path.resolve(expandHome(input));
+}
+
+async function runCommand(
+	command: string,
+	args: string[],
+	options: RunCommandOptions = {},
+): Promise<RunCommandResult> {
+	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, {
+			stdio: "pipe",
+			env: options.env ? { ...process.env, ...options.env } : process.env,
+		});
+		let stdout = "";
+		let stderr = "";
+		let timedOut = false;
+
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGTERM");
+			setTimeout(() => child.kill("SIGKILL"), 1500).unref();
+		}, timeoutMs);
+
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk.toString();
+		});
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk.toString();
+		});
+		child.on("error", (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+		child.on("close", (code) => {
+			clearTimeout(timer);
+			if (timedOut) {
+				reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`));
+				return;
+			}
+			const exitCode = typeof code === "number" ? code : -1;
+			if (exitCode !== 0 && !options.allowNonZero) {
+				const message = stderr.trim() || `Command exited with code ${exitCode}`;
+				reject(new Error(message));
+				return;
+			}
+			resolve({ stdout, stderr, exitCode });
+		});
+
+		if (options.stdin !== undefined) {
+			child.stdin.write(options.stdin);
+		}
+		child.stdin.end();
+	});
+}
+
+async function commandExists(command: string): Promise<boolean> {
+	const probe = process.platform === "win32" ? "where" : "which";
+	try {
+		const result = await runCommand(probe, [command], {
+			timeoutMs: 1500,
+			allowNonZero: true,
+		});
+		return result.exitCode === 0;
+	} catch {
+		return false;
+	}
+}
+
+function getCredentialMap(): Record<string, SshCredentialEntry> {
+	const sshState = appState.data.sshState;
+	if (!sshState.credentialsByAlias) {
+		sshState.credentialsByAlias = {};
+	}
+	return sshState.credentialsByAlias;
+}
+
+function getMountMap(): Record<string, SshMountStateEntry> {
+	const sshState = appState.data.sshState;
+	if (!sshState.mountsByAlias) {
+		sshState.mountsByAlias = {};
+	}
+	return sshState.mountsByAlias;
+}
+
+function getFallbackAuthMode(host: ParsedSshHost): SshAuthMode {
+	if (host.identityFile) {
+		return "key";
+	}
+	return "agent";
+}
+
+function toPublicCredential(
+	host: ParsedSshHost,
+	credential: SshCredentialEntry | null,
+): SshCredentialPublic {
+	const authMode = credential?.authMode ?? getFallbackAuthMode(host);
+	return {
+		authMode,
+		user: credential?.user ?? null,
+		port: credential?.port ?? null,
+		identityFile: credential?.identityFile ?? null,
+		hasPassword: Boolean(credential?.passwordCiphertext),
+		updatedAt: credential?.updatedAt ?? null,
+	};
+}
+
+function getResolvedTarget(
+	host: ParsedSshHost,
+	credential: SshCredentialPublic,
+): string {
+	const address = host.hostName ?? host.alias;
+	const user = credential.user ?? host.user;
+	const port = credential.port ?? host.port;
+	const withUser = user ? `${user}@${address}` : address;
+	return port ? `${withUser}:${port}` : withUser;
+}
+
+function buildSshOptionArgs(
+	host: ParsedSshHost,
+	credential: SshCredentialPublic,
+	options: { nonInteractive: boolean },
+): string[] {
+	const args: string[] = [];
+	const user = credential.user ?? host.user;
+	const port = credential.port ?? host.port;
+	const identityFile = credential.identityFile ?? host.identityFile;
+
+	if (credential.authMode === "password") {
+		args.push(
+			"-o",
+			"PreferredAuthentications=password",
+			"-o",
+			"PubkeyAuthentication=no",
+			"-o",
+			"NumberOfPasswordPrompts=1",
+		);
+	} else if (options.nonInteractive) {
+		args.push("-o", "BatchMode=yes");
+	}
+
+	if (credential.authMode === "key" && identityFile) {
+		args.push("-o", "IdentitiesOnly=yes", "-i", expandHome(identityFile));
+	}
+
+	if (user) {
+		args.push("-l", user);
+	}
+
+	if (port) {
+		args.push("-p", String(port));
+	}
+
+	args.push("-o", "StrictHostKeyChecking=accept-new");
+	return args;
+}
+
+function buildBaseSshCommand(
+	host: ParsedSshHost,
+	credential: SshCredentialPublic,
+): string {
+	const command: string[] = ["ssh"];
+	for (const arg of buildSshOptionArgs(host, credential, {
+		nonInteractive: false,
+	})) {
+		command.push(shellQuote(arg));
+	}
+	command.push(shellQuote(host.alias));
+	return command.join(" ");
+}
+
+function decryptPassword(ciphertext: string | null): string | null {
+	if (!ciphertext) return null;
+	try {
+		return decrypt(Buffer.from(ciphertext, "base64"));
+	} catch {
+		return null;
+	}
+}
+
+function buildLaunchCommand(
+	host: ParsedSshHost,
+	credential: SshCredentialPublic,
+	passwordCiphertext: string | null,
+): string {
+	const baseCommand = buildBaseSshCommand(host, credential);
+	if (credential.authMode !== "password") {
+		return baseCommand;
+	}
+
+	const password = decryptPassword(passwordCiphertext);
+	if (!password) {
+		return baseCommand;
+	}
+
+	const fallbackMessage =
+		"sshpass not found. Install it (brew install hudochenkov/sshpass/sshpass) or use key auth.";
+
+	return `if command -v sshpass >/dev/null 2>&1; then SSHPASS=${shellQuote(password)} sshpass -e ${baseCommand}; else echo ${shellQuote(fallbackMessage)}; ${baseCommand}; fi`;
+}
+
+function toHostEntry(
+	host: ParsedSshHost,
+	credentialRecord: SshCredentialEntry | null,
+): SshHostEntry {
+	const credential = toPublicCredential(host, credentialRecord);
+	return {
+		...host,
+		resolvedTarget: getResolvedTarget(host, credential),
+		commandPreview: buildBaseSshCommand(host, credential),
+		credential,
+	};
 }
 
 async function resolveIncludeTargets(
@@ -373,143 +658,231 @@ async function parseSshHosts(): Promise<ParsedSshHost[]> {
 	);
 }
 
-function shellQuote(value: string): string {
-	return `'${value.replace(/'/g, "'\"'\"'")}'`;
-}
-
-function toNullableString(value: string | null | undefined): string | null {
-	if (typeof value !== "string") return null;
-	const next = value.trim();
-	return next.length > 0 ? next : null;
-}
-
-function getCredentialMap(): Record<string, SshCredentialEntry> {
-	const state = appState.data.sshState;
-	if (!state || !state.credentialsByAlias) {
-		return {};
+async function getMountedPathSet(): Promise<Set<string>> {
+	const result = await runCommand("mount", [], {
+		allowNonZero: true,
+		timeoutMs: 3000,
+	});
+	const mountedPaths = new Set<string>();
+	if (result.exitCode !== 0) {
+		return mountedPaths;
 	}
-	return state.credentialsByAlias;
-}
-
-function getFallbackAuthMode(host: ParsedSshHost): SshAuthMode {
-	if (host.identityFile) {
-		return "key";
+	for (const line of result.stdout.split(/\r?\n/)) {
+		const normalizedLine = line.trim();
+		if (!normalizedLine) continue;
+		const onParen = /\s+on\s+(.+?)\s+\(/.exec(normalizedLine);
+		if (onParen?.[1]) {
+			mountedPaths.add(path.resolve(onParen[1]));
+			continue;
+		}
+		const onType = /\s+on\s+(.+?)\s+type\s+/.exec(normalizedLine);
+		if (onType?.[1]) {
+			mountedPaths.add(path.resolve(onType[1]));
+		}
 	}
-	return "agent";
+	return mountedPaths;
 }
 
-function toPublicCredential(
-	host: ParsedSshHost,
-	credential: SshCredentialEntry | null,
-): SshCredentialPublic {
-	const authMode = credential?.authMode ?? getFallbackAuthMode(host);
-	return {
-		authMode,
-		user: credential?.user ?? null,
-		port: credential?.port ?? null,
-		identityFile: credential?.identityFile ?? null,
-		hasPassword: Boolean(credential?.passwordCiphertext),
-		updatedAt: credential?.updatedAt ?? null,
-	};
+function getHostOrThrow(hosts: ParsedSshHost[], alias: string): ParsedSshHost {
+	const host = hosts.find((item) => item.alias === alias);
+	if (!host) {
+		throw new TRPCError({
+			code: "NOT_FOUND",
+			message: `SSH host "${alias}" not found in ~/.ssh/config`,
+		});
+	}
+	return host;
 }
 
-function getResolvedTarget(
+async function runSshWithCredential(
 	host: ParsedSshHost,
 	credential: SshCredentialPublic,
-): string {
-	const address = host.hostName ?? host.alias;
-	const user = credential.user ?? host.user;
-	const port = credential.port ?? host.port;
-	const withUser = user ? `${user}@${address}` : address;
-	return port ? `${withUser}:${port}` : withUser;
+	passwordCiphertext: string | null,
+	remoteCommand: string,
+): Promise<RunCommandResult> {
+	const sshArgs = [
+		...buildSshOptionArgs(host, credential, { nonInteractive: true }),
+		host.alias,
+		remoteCommand,
+	];
+
+	if (credential.authMode === "password") {
+		const password = decryptPassword(passwordCiphertext);
+		if (!password) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: "Password auth selected but no saved password found.",
+			});
+		}
+		if (!(await commandExists("sshpass"))) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message:
+					"Password auth requires sshpass for non-interactive commands. Install it first.",
+			});
+		}
+		return runCommand("sshpass", ["-p", password, "ssh", ...sshArgs], {
+			timeoutMs: INSPECT_TIMEOUT_MS,
+		});
+	}
+
+	return runCommand("ssh", sshArgs, { timeoutMs: INSPECT_TIMEOUT_MS });
 }
 
-function buildBaseSshCommand(
+function buildSshfsArgs(
 	host: ParsedSshHost,
 	credential: SshCredentialPublic,
-): string {
-	const command: string[] = ["ssh"];
+	mountPath: string,
+): string[] {
+	const args = [
+		`${host.alias}:/`,
+		mountPath,
+		"-o",
+		"reconnect",
+		"-o",
+		"ServerAliveInterval=15",
+		"-o",
+		"ServerAliveCountMax=3",
+		"-o",
+		"StrictHostKeyChecking=accept-new",
+	];
+
 	const user = credential.user ?? host.user;
 	const port = credential.port ?? host.port;
 	const identityFile = credential.identityFile ?? host.identityFile;
 
-	if (credential.authMode === "password") {
-		command.push(
-			"-o",
-			"PreferredAuthentications=password",
-			"-o",
-			"PubkeyAuthentication=no",
-			"-o",
-			"NumberOfPasswordPrompts=1",
-		);
+	if (user) {
+		args.push("-o", `User=${user}`);
 	}
-
+	if (port) {
+		args.push("-p", String(port));
+	}
 	if (credential.authMode === "key" && identityFile) {
-		command.push(
+		args.push(
+			"-o",
+			`IdentityFile=${expandHome(identityFile)}`,
 			"-o",
 			"IdentitiesOnly=yes",
-			"-i",
-			shellQuote(expandHome(identityFile)),
 		);
 	}
-
-	if (user) {
-		command.push("-l", shellQuote(user));
+	if (credential.authMode === "password") {
+		args.push("-o", "password_stdin");
 	}
 
-	if (port) {
-		command.push("-p", String(port));
-	}
-
-	command.push(shellQuote(host.alias));
-	return command.join(" ");
+	return args;
 }
 
-function decryptPassword(ciphertext: string | null): string | null {
-	if (!ciphertext) return null;
-	try {
-		return decrypt(Buffer.from(ciphertext, "base64"));
-	} catch {
-		return null;
-	}
-}
-
-function buildLaunchCommand(
+async function mountHostViaSshfs(
 	host: ParsedSshHost,
 	credential: SshCredentialPublic,
 	passwordCiphertext: string | null,
-): string {
-	const baseCommand = buildBaseSshCommand(host, credential);
-	if (credential.authMode !== "password") {
-		return baseCommand;
+	mountPath: string,
+): Promise<void> {
+	if (!(await commandExists("sshfs"))) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message:
+				"sshfs is not installed. Install sshfs (and macFUSE on macOS) first.",
+		});
 	}
 
-	const password = decryptPassword(passwordCiphertext);
-	if (!password) {
-		return baseCommand;
+	await fs.mkdir(mountPath, { recursive: true });
+	const args = buildSshfsArgs(host, credential, mountPath);
+
+	let stdin: string | undefined;
+	if (credential.authMode === "password") {
+		const password = decryptPassword(passwordCiphertext);
+		if (!password) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: "Password auth selected but no saved password found.",
+			});
+		}
+		stdin = `${password}\n`;
 	}
 
-	const fallbackMessage =
-		"sshpass not found. Install it (brew install hudochenkov/sshpass/sshpass) or use key auth.";
-
-	return `if command -v sshpass >/dev/null 2>&1; then SSHPASS=${shellQuote(password)} sshpass -e ${baseCommand}; else echo ${shellQuote(fallbackMessage)}; ${baseCommand}; fi`;
+	await runCommand("sshfs", args, {
+		timeoutMs: MOUNT_TIMEOUT_MS,
+		stdin,
+	});
 }
 
-function toHostEntry(
-	host: ParsedSshHost,
-	credentialRecord: SshCredentialEntry | null,
-): SshHostEntry {
-	const credential = toPublicCredential(host, credentialRecord);
+async function unmountPath(mountPath: string): Promise<void> {
+	const candidates: Array<[string, string[]]> =
+		process.platform === "darwin"
+			? [
+					["umount", [mountPath]],
+					["umount", ["-f", mountPath]],
+					["diskutil", ["unmount", mountPath]],
+				]
+			: [
+					["fusermount3", ["-u", mountPath]],
+					["fusermount", ["-u", mountPath]],
+					["umount", [mountPath]],
+				];
+
+	let lastError: string | null = null;
+	for (const [command, args] of candidates) {
+		if (!(await commandExists(command))) {
+			continue;
+		}
+		const result = await runCommand(command, args, {
+			allowNonZero: true,
+			timeoutMs: 10_000,
+		});
+		if (result.exitCode === 0) {
+			return;
+		}
+		lastError = result.stderr.trim() || `exit code ${result.exitCode}`;
+	}
+
+	throw new Error(lastError ?? "No available unmount command succeeded.");
+}
+
+function saveMountState(
+	alias: string,
+	patch: Partial<SshMountStateEntry>,
+): void {
+	const mountsByAlias = getMountMap();
+	const previous = mountsByAlias[alias];
+	mountsByAlias[alias] = {
+		mountPath: previous?.mountPath ?? getDefaultMountPath(alias),
+		lastMountedAt: previous?.lastMountedAt ?? null,
+		lastUnmountedAt: previous?.lastUnmountedAt ?? null,
+		lastError: previous?.lastError ?? null,
+		...patch,
+	};
+}
+
+function toMountEntry(
+	alias: string,
+	mountPath: string,
+	isMounted: boolean,
+	state: SshMountStateEntry | null,
+): SshMountEntry {
 	return {
-		...host,
-		resolvedTarget: getResolvedTarget(host, credential),
-		commandPreview: buildBaseSshCommand(host, credential),
-		credential,
+		alias,
+		mountPath,
+		isMounted,
+		lastMountedAt: state?.lastMountedAt ?? null,
+		lastUnmountedAt: state?.lastUnmountedAt ?? null,
+		lastError: state?.lastError ?? null,
 	};
 }
 
 export const createSshRouter = () => {
 	return router({
+		getCapabilities: publicProcedure.query(async () => {
+			const [hasSshfs, hasSshpass] = await Promise.all([
+				commandExists("sshfs"),
+				commandExists("sshpass"),
+			]);
+			return {
+				hasSshfs,
+				hasSshpass,
+			};
+		}),
+
 		listHosts: publicProcedure.query(async () => {
 			const hosts = await parseSshHosts();
 			const credentialMap = getCredentialMap();
@@ -520,18 +893,45 @@ export const createSshRouter = () => {
 			};
 		}),
 
+		listMounts: publicProcedure.query(async () => {
+			const hosts = await parseSshHosts();
+			const hostAliases = new Set(hosts.map((host) => host.alias));
+			const mountedPaths = await getMountedPathSet();
+			const mountsByAlias = getMountMap();
+
+			const mounts = hosts.map((host) => {
+				const state = mountsByAlias[host.alias] ?? null;
+				const mountPath = state?.mountPath ?? getDefaultMountPath(host.alias);
+				return toMountEntry(
+					host.alias,
+					mountPath,
+					mountedPaths.has(path.resolve(mountPath)),
+					state,
+				);
+			});
+
+			for (const [alias, state] of Object.entries(mountsByAlias)) {
+				if (hostAliases.has(alias)) continue;
+				const mountPath = state.mountPath || getDefaultMountPath(alias);
+				mounts.push(
+					toMountEntry(
+						alias,
+						mountPath,
+						mountedPaths.has(path.resolve(mountPath)),
+						state,
+					),
+				);
+			}
+
+			mounts.sort((a, b) => a.alias.localeCompare(b.alias));
+			return { mounts };
+		}),
+
 		getLaunchCommand: publicProcedure
 			.input(aliasInputSchema)
 			.mutation(async ({ input }) => {
 				const hosts = await parseSshHosts();
-				const host = hosts.find((item) => item.alias === input.alias);
-				if (!host) {
-					throw new TRPCError({
-						code: "NOT_FOUND",
-						message: `SSH host "${input.alias}" not found in ~/.ssh/config`,
-					});
-				}
-
+				const host = getHostOrThrow(hosts, input.alias);
 				const credentialRecord = getCredentialMap()[host.alias] ?? null;
 				const credential = toPublicCredential(host, credentialRecord);
 				const launchCommand = buildLaunchCommand(
@@ -567,7 +967,7 @@ export const createSshRouter = () => {
 					passwordCiphertext = encrypt(trimmedPassword).toString("base64");
 				}
 
-				appState.data.sshState.credentialsByAlias[input.alias] = {
+				credentialsByAlias[input.alias] = {
 					authMode: input.authMode,
 					user,
 					port,
@@ -577,31 +977,146 @@ export const createSshRouter = () => {
 				};
 				await appState.write();
 
-				return {
-					success: true,
-					credential: toPublicCredential(
-						{
-							alias: input.alias,
-							hostName: null,
-							user: null,
-							port: null,
-							identityFile: null,
-							proxyJump: null,
-							sourcePath: "~/.ssh/config",
-							line: 0,
-							tags: [],
-						},
-						appState.data.sshState.credentialsByAlias[input.alias],
-					),
-				};
+				return { success: true };
 			}),
 
 		clearCredential: publicProcedure
 			.input(aliasInputSchema)
 			.mutation(async ({ input }) => {
-				delete appState.data.sshState.credentialsByAlias[input.alias];
+				const credentialsByAlias = getCredentialMap();
+				delete credentialsByAlias[input.alias];
 				await appState.write();
 				return { success: true };
+			}),
+
+		mountHost: publicProcedure
+			.input(mountHostInputSchema)
+			.mutation(async ({ input }) => {
+				const hosts = await parseSshHosts();
+				const host = getHostOrThrow(hosts, input.alias);
+				const credentialRecord = getCredentialMap()[host.alias] ?? null;
+				const credential = toPublicCredential(host, credentialRecord);
+				const mountPath = resolveMountPath(host.alias, input.mountPath);
+
+				try {
+					const mountedPaths = await getMountedPathSet();
+					if (!mountedPaths.has(path.resolve(mountPath))) {
+						await mountHostViaSshfs(
+							host,
+							credential,
+							credentialRecord?.passwordCiphertext ?? null,
+							mountPath,
+						);
+					}
+
+					saveMountState(host.alias, {
+						mountPath,
+						lastMountedAt: Date.now(),
+						lastError: null,
+					});
+					await appState.write();
+
+					return {
+						success: true,
+						alias: host.alias,
+						mountPath,
+					};
+				} catch (error) {
+					saveMountState(host.alias, {
+						mountPath,
+						lastError: error instanceof Error ? error.message : String(error),
+					});
+					await appState.write();
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							error instanceof Error ? error.message : "Failed to mount host.",
+					});
+				}
+			}),
+
+		unmountHost: publicProcedure
+			.input(aliasInputSchema)
+			.mutation(async ({ input }) => {
+				const alias = input.alias;
+				const mountsByAlias = getMountMap();
+				const state = mountsByAlias[alias] ?? null;
+				const mountPath = state?.mountPath ?? getDefaultMountPath(alias);
+
+				try {
+					const mountedPaths = await getMountedPathSet();
+					if (mountedPaths.has(path.resolve(mountPath))) {
+						await unmountPath(mountPath);
+					}
+
+					saveMountState(alias, {
+						mountPath,
+						lastUnmountedAt: Date.now(),
+						lastError: null,
+					});
+					await appState.write();
+					return {
+						success: true,
+						alias,
+						mountPath,
+					};
+				} catch (error) {
+					saveMountState(alias, {
+						mountPath,
+						lastError: error instanceof Error ? error.message : String(error),
+					});
+					await appState.write();
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							error instanceof Error
+								? error.message
+								: "Failed to unmount host.",
+					});
+				}
+			}),
+
+		inspectHost: publicProcedure
+			.input(aliasInputSchema)
+			.mutation(async ({ input }) => {
+				const hosts = await parseSshHosts();
+				const host = getHostOrThrow(hosts, input.alias);
+				const credentialRecord = getCredentialMap()[host.alias] ?? null;
+				const credential = toPublicCredential(host, credentialRecord);
+
+				const command = [
+					"(uname -srm 2>/dev/null || uname -a 2>/dev/null || echo unknown)",
+					`echo ${MOUNT_SEPARATOR}`,
+					"(hostname 2>/dev/null || echo unknown)",
+					`echo ${MOUNT_SEPARATOR}`,
+					"(uptime 2>/dev/null || echo unknown)",
+					`echo ${MOUNT_SEPARATOR}`,
+					"(df -h / 2>/dev/null | tail -n 1 || echo unknown)",
+					`echo ${MOUNT_SEPARATOR}`,
+					"(whoami 2>/dev/null || echo unknown)",
+				].join("; ");
+
+				const result = await runSshWithCredential(
+					host,
+					credential,
+					credentialRecord?.passwordCiphertext ?? null,
+					command,
+				);
+
+				const parts = result.stdout
+					.split(MOUNT_SEPARATOR)
+					.map((part) => part.trim())
+					.filter(Boolean);
+
+				return {
+					alias: host.alias,
+					os: parts[0] ?? "unknown",
+					hostname: parts[1] ?? "unknown",
+					uptime: parts[2] ?? "unknown",
+					diskRoot: parts[3] ?? "unknown",
+					remoteUser: parts[4] ?? "unknown",
+					fetchedAt: Date.now(),
+				};
 			}),
 	});
 };
